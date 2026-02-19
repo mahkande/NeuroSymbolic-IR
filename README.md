@@ -1,42 +1,38 @@
 ﻿# NeuroGraph OS
 
-## 1. Projenin Amaci
+## 1. Project Goal
 
-Bu projenin amaci, klasik **prompt -> kaynak kod -> token tahmini** yaklasiminin otesine gecerek:
+The goal of this project is to move beyond the classical **prompt -> source code -> token prediction** pipeline by building an AI system that is:
 
-> **Insan niyeti (intent)** ile **makineye en yakin semantik temsil (LLVM IR)** arasinda  
-> **deterministik, analiz edilebilir ve tersine akil yurutebilen (inverse reasoning)**  
-> bir yapay zeka sistemi kurmaktir.
+- deterministic,
+- analyzable,
+- and capable of inverse reasoning,
 
-Bu sistem:
-- Kod *yazan* degil
-- Programi *anlayan*, *temsil eden*, *analiz eden* ve *geri aciklayabilen* bir AI uretmeyi hedefler.
-
-AGI yolunda kritik olan **sembolik + noral hibrit akil** bu mimarinin merkezindedir.
+through a bridge between **human intent** and a **machine-near semantic representation (LLVM IR)**.
 
 ---
 
-## 2. Temel Fikir (High-Level Concept)
+## 2. High-Level Concept
 
-Klasik LLM'ler:
-- Kaynak kodu token dizisi olarak gorur
-- Determinizm ve geri izlenebilirlik dusuktur
+Classical LLM systems:
+- treat code as token sequences,
+- have limited determinism and traceability.
 
-Bu proje ise:
-- Programi **LLVM IR** seviyesinde ele alir
-- IR'yi **graph (CFG / DFG)** olarak temsil eder
-- Graph'i **embedding vektorlerine** donusturur
-- Bu vektorler uzerinde **reasoning ve inverse reasoning** yapar
+This project instead:
+- handles programs at the **LLVM IR** level,
+- represents IR as **graphs (CFG / DFG)**,
+- converts graph structures into **embedding vectors**,
+- performs **reasoning and inverse reasoning** over these structures.
 
-## Ne Yapar?
-- Girilen metni ISA semasina uygun IR komutlarina derler.
-- IR komutlarini kalici graph hafizasina yazar.
-- Tutarlilik/celiski kontrolu uygular (guvenli mod + opsiyonel native Z3).
-- Dashboard uzerinden canli graph, opcode dagilimi ve sistem olaylarini gosterir.
-- Shadow/listener boru hattiyla dosya/oturum tabanli veri beslemesini destekler.
-- Uzun metinleri chunk ederek daha kapsamli IR cikarmaya calisir.
+## What It Does
+- Compiles input text into ISA-schema-compliant IR instructions.
+- Writes IR chains into persistent graph memory.
+- Runs consistency/conflict checks (safe mode + optional native Z3).
+- Provides a live dashboard for graph state, opcode distribution, and runtime events.
+- Supports file/session-based ingestion through shadow/listener pipelines.
+- Uses chunking for longer inputs to improve IR coverage.
 
-## IR Kategorileri
+## IR Categories
 - `ONTOLOGICAL`: `DEF_ENTITY`, `DEF_CONCEPT`, `ISA`, `EQUIV`, `ATTR`
 - `EPISTEMIC`: `KNOW`, `BELIEVE`, `DOUBT`, `WONDER`, `ASSUME`
 - `TELEOLOGICAL`: `WANT`, `AVOID`, `GOAL`, `INTEND`, `EVAL`, `DO`
@@ -45,59 +41,57 @@ Bu proje ise:
 - `TEMPORAL`: `BEFORE`, `WHILE`, `START`, `END`
 - `META_COGNITIVE`: `REFLECT`, `CORRECT`, `ANALOGY`
 
-ISA semasi: `spec/isa_v1.json`
+ISA schema: `spec/isa_v1.json`
 
-## Mimari Ozet
-- `core/model_bridge.py`: LLM istemcisi, prompt, fallback derleme
-- `core/nlp_utils.py`: normalizasyon, grammar filter, relation rebalance
-- `core/logic_engine.py`: tutarlilik kontrolu
-- `memory/knowledge_graph.py`: graph yazim/okuma kurallari
-- `main.py`: ana boru hatti (chunking, cache, validation, persistence)
-- `ui/dashboard.py`: canli kontrol paneli
+## Architecture Overview
+- `core/model_bridge.py`: LLM client, prompting, fallback compilation
+- `core/nlp_utils.py`: normalization, grammar filter, relation rebalance
+- `core/logic_engine.py`: consistency checking
+- `memory/knowledge_graph.py`: graph persistence and access rules
+- `main.py`: main pipeline (chunking, cache, validation, persistence)
+- `ui/dashboard.py`: live control panel
 
-## Deterministik Reasoning Akisi
-1. Metin/iddia sisteme girer.
-2. ISA opcode'lari ile IR zinciri uretilir.
-3. IR graph hafizasina yazilir.
-4. Tutarlilik ve celiski kontrolleri uygulanir.
-5. Cikti, denetlenebilir bir reasoning iziyle birlikte saklanir.
+## Deterministic Reasoning Flow
+1. A text claim is submitted.
+2. An IR chain is generated with ISA opcodes.
+3. IR is written to graph memory.
+4. Consistency and contradiction checks are applied.
+5. Output is retained with a verifiable reasoning trace.
 
-Bu akisin hedefi, LLM'i "sadece cevap veren" bir modelden "cevabini saglayabilen" bir yapiya tasimaktir.
-
-## Kurulum (Lokal)
-1. Python 3.11+ ortami hazirla.
-2. Sanal ortam olustur ve aktif et:
+## Local Setup
+1. Prepare Python 3.11+.
+2. Create and activate a virtual environment:
 ```bash
 python -m venv .venv
 # Windows (PowerShell)
 .venv\Scripts\Activate.ps1
 ```
-3. Bagimliliklari yukle:
+3. Install dependencies:
 ```bash
 pip install -U networkx streamlit streamlit-agraph watchdog groq z3-solver zeyrek nltk
 ```
-4. Ortam degiskenlerini ayarla:
+4. Set environment variables:
 ```bash
 set GROQ_API_KEY=YOUR_KEY
 set GROQ_MODEL=llama-3.3-70b-versatile
 ```
 
-## Dashboard Calistirma
+## Run Dashboard
 ```bash
 streamlit run ui/dashboard.py
 ```
 
-Dashboard acildiginda:
-- Sol panelden `Clear Memory` ve `Clear IR Cache` ile temiz baslangic yapabilirsin.
-- Metni input alanina yapistirip Enter ile IR->Graph akisina girebilirsin.
+After launch:
+- Use `Clear Memory` and `Clear IR Cache` in the sidebar for a clean run.
+- Paste text into the input box and press Enter to trigger the IR -> Graph pipeline.
 
-## CLI Calistirma (Alternatif)
+## Run via CLI (Alternative)
 ```bash
 python main.py
 ```
 
-## GitHub'a Yukleme
-Bu proje klasorunden:
+## Push to GitHub
+From the project directory:
 ```bash
 git init
 git branch -M main
@@ -107,22 +101,22 @@ git remote add origin https://github.com/mahkande/NeuroSymbolic-IR.git
 git push -u origin main
 ```
 
-Eger remote zaten varsa:
+If remote already exists:
 ```bash
 git remote set-url origin https://github.com/mahkande/NeuroSymbolic-IR.git
 git push -u origin main
 ```
 
-## Tasarim Notlari
-- Uzun metinler chunk edilerek islenir; tek parca sinirlari azaltilmistir.
-- Graph, ayni node cifti icin coklu opcode saklayacak sekilde yapilandirilmistir.
-- Runtime gurdultusunu azaltmak icin shadow/bridge kanallarinda filtreleme vardir.
+## Design Notes
+- Long inputs are processed in chunks to avoid single-pass bottlenecks.
+- The graph is configured to keep multiple opcode edges between the same node pair.
+- Shadow/bridge channels include filtering to reduce runtime noise.
 
-## Guvenlik ve Gizlilik
-- API anahtarlarini kodda hardcode etmek yerine ortam degiskeni kullanin.
-- Runtime graph/log/cache dosyalari `.gitignore` ile repo disinda tutulmalidir.
+## Security and Privacy
+- Use environment variables for API keys instead of hardcoding secrets.
+- Runtime graph/log/cache artifacts should stay out of version control via `.gitignore`.
 
-## Yol Haritasi
-- Opcode basina precision/recall metrik dashboard'u
-- Alt-graf kalite skorlari ve otomatik alarm esikleri
-- Dataset tabanli relation classifier egitimi (hybrid pipeline)
+## Roadmap
+- Per-opcode precision/recall metrics dashboard
+- Subgraph quality scoring and automatic alert thresholds
+- Dataset-driven relation classifier training (hybrid pipeline)

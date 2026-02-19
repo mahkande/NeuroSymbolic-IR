@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "rule_cand_4446194648528676502_1",
+      "fingerprint": "^bellek\\ yuku\\ artarsa\\ performans\\ duser\\.$|CAUSE|bellek_yuku_artisi|performans_dususu",
+      "pattern": "^bellek\\ yuku\\ artarsa\\ performans\\ duser\\.$",
+      "op": "CAUSE",
+      "args": [
+        "bellek_yuku_artisi",
+        "performans_dususu"
+      ],
+      "status": "active",
+      "priority": 100,
+      "created_at": "2026-02-18T13:59:32.356548+00:00",
+      "source": "listener_fallback"
+    },
+    {
+      "id": "rule_cand_3719792330773697765_2",
+      "fingerprint": "^bellek\\ yuk\\ artarsa\\ performans\\ duser\\ test\\ codex\\ bridge$|CAUSE|bellek_yuk_artisi|performans_dususu",
+      "pattern": "^bellek\\ yuk\\ artarsa\\ performans\\ duser\\ test\\ codex\\ bridge$",
+      "op": "CAUSE",
+      "args": [
+        "bellek_yuk_artisi",
+        "performans_dususu"
+      ],
+      "status": "active",
+      "priority": 100,
+      "created_at": "2026-02-19T16:48:25.130049+00:00",
+      "source": "listener_fallback"
+    }
+  ]
+}

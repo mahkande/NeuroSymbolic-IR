@@ -1,0 +1,56 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets / env
+.env
+.env.*
+*.pem
+*.key
+*.secret
+
+# Runtime cache
+cache.jsonl
+conversation.txt
+
+# Runtime memory artifacts
+memory/global_graph.json
+memory/global_graph.backup.json
+memory/processed_logs.txt
+memory/shadow_events.jsonl
+memory/shadow_inbox.txt
+memory/vscode_bridge_events.jsonl
+memory/rule_unknown_buffer.jsonl
+memory/rule_decisions.jsonl
+memory/rule_candidates.json
+
+# Logs
+*.log
+logs/
+
+# Optional local outputs
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.svg
+
+# Keep structure placeholders if needed
+!.gitkeep

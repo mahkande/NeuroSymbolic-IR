@@ -1,0 +1,265 @@
+{
+  "version": "1.0",
+  "project": "Cognitive-IR-AGI",
+  "metadata": {
+    "author": "Human-AI Collaboration",
+    "description": "Düşüncenin atomik ve ölçülebilir makine dili tanımı."
+  },
+  "categories": {
+    "ONTOLOGICAL": {
+      "description": "Varlık ve Kavram Tanımlama",
+      "opcodes": {
+        "DEF_ENTITY": {
+          "args": [
+            "ID",
+            "Type"
+          ],
+          "desc": "Fiziksel veya dijital bir varlığı başlatır."
+        },
+        "DEF_CONCEPT": {
+          "args": [
+            "ID",
+            "Abstract_Type"
+          ],
+          "desc": "Soyut bir kavramı (örn: adalet) tanımlar."
+        },
+        "ISA": {
+          "args": [
+            "Child",
+            "Parent"
+          ],
+          "desc": "Hiyerarşik sınıflandırma bağı kurar."
+        },
+        "EQUIV": {
+          "args": [
+            "A",
+            "B"
+          ],
+          "desc": "İki kavramın semantik eşdeğerliğini belirtir."
+        },
+        "ATTR": {
+          "args": [
+            "ID",
+            "Key",
+            "Value"
+          ],
+          "desc": "Varlığa veya kavrama özellik atar."
+        }
+      }
+    },
+    "EPISTEMIC": {
+      "description": "Bilgi ve İnanç Durumları",
+      "opcodes": {
+        "KNOW": {
+          "args": [
+            "Subject",
+            "Fact"
+          ],
+          "desc": "Kesinliği doğrulanmış bilgi."
+        },
+        "BELIEVE": {
+          "args": [
+            "Subject",
+            "Fact",
+            "Confidence"
+          ],
+          "desc": "Olasılıksal inanç (0.0 - 1.0)."
+        },
+        "DOUBT": {
+          "args": [
+            "Subject",
+            "Fact"
+          ],
+          "desc": "Bilginin doğruluğuna dair şüphe işareti."
+        },
+        "WONDER": {
+          "args": [
+            "Subject",
+            "Question"
+          ],
+          "desc": "Eksik bilgiyi tanımlar ve arama tetikler."
+        },
+        "ASSUME": {
+          "args": [
+            "Fact"
+          ],
+          "desc": "Akıl yürütme için geçici varsayım."
+        }
+      }
+    },
+    "TELEOLOGICAL": {
+      "description": "Niyet, Arzu ve Motivasyon",
+      "opcodes": {
+        "WANT": {
+          "args": [
+            "Subject",
+            "State"
+          ],
+          "desc": "Bir duruma ulaşma arzusu."
+        },
+        "AVOID": {
+          "args": [
+            "Subject",
+            "State"
+          ],
+          "desc": "Bir durumdan kaçınma dürtüsü."
+        },
+        "GOAL": {
+          "args": [
+            "Subject",
+            "State",
+            "Priority"
+          ],
+          "desc": "Somutlaştırılmış stratejik hedef."
+        },
+        "INTEND": {
+          "args": [
+            "Subject",
+            "Action"
+          ],
+          "desc": "Eyleme geçme kararlılığı."
+        },
+        "EVAL": {
+          "args": [
+            "Object_or_State",
+            "Score"
+          ],
+          "desc": "Subjektif değer biçme (-1.0 to 1.0)."
+        },
+        "DO": {
+          "args": [
+            "Subject",
+            "Action"
+          ],
+          "desc": "Opcode eslesmesi yoksa gecici eylem kaydi."
+        }
+      }
+    },
+    "CAUSAL_LOGIC": {
+      "description": "Nedensellik ve Mantık Akışı",
+      "opcodes": {
+        "CAUSE": {
+          "args": [
+            "Condition",
+            "Effect"
+          ],
+          "desc": "Deterministik neden-sonuç bağı."
+        },
+        "PREVENT": {
+          "args": [
+            "A",
+            "B"
+          ],
+          "desc": "A'nın varlığı B'nin olmasını engeller."
+        },
+        "IMPLY": {
+          "args": [
+            "If_A",
+            "Then_B"
+          ],
+          "desc": "Mantıksal çıkarım."
+        },
+        "OPPOSE": {
+          "args": [
+            "Node_A",
+            "Node_B"
+          ],
+          "desc": "Karşılıklı dışlama (Çelişki)."
+        },
+        "TRIGGER": {
+          "args": [
+            "Event",
+            "Action"
+          ],
+          "desc": "Olay-Eylem tetiklemesi."
+        }
+      }
+    },
+    "DEONTIC": {
+      "description": "Kurallar, İzinler ve Sınırlar",
+      "opcodes": {
+        "MUST": {
+          "args": [
+            "Action"
+          ],
+          "desc": "Katı zorunluluk (Hard Constraint)."
+        },
+        "MAY": {
+          "args": [
+            "Action"
+          ],
+          "desc": "İzin verilen serbestlik alanı."
+        },
+        "FORBID": {
+          "args": [
+            "Action"
+          ],
+          "desc": "Yasaklanmış eylem veya durum."
+        },
+        "CAN": {
+          "args": [
+            "Subject",
+            "Ability"
+          ],
+          "desc": "Kapasite ve yetenek tanımı."
+        }
+      }
+    },
+    "TEMPORAL": {
+      "description": "Zaman ve Süreç Yönetimi",
+      "opcodes": {
+        "BEFORE": {
+          "args": [
+            "Event_A",
+            "Event_B"
+          ],
+          "desc": "Zaman dizilimi."
+        },
+        "WHILE": {
+          "args": [
+            "Condition",
+            "Action"
+          ],
+          "desc": "Süregen durum ve eylem."
+        },
+        "START": {
+          "args": [
+            "Process"
+          ],
+          "desc": "Süreç başlangıcı."
+        },
+        "END": {
+          "args": [
+            "Process"
+          ],
+          "desc": "Süreç bitişi."
+        }
+      }
+    },
+    "META_COGNITIVE": {
+      "description": "Öz-Denetim ve Analiz",
+      "opcodes": {
+        "REFLECT": {
+          "args": [
+            "IR_Chain"
+          ],
+          "desc": "Kendi düşünce zincirini analiz et."
+        },
+        "CORRECT": {
+          "args": [
+            "Old_Op",
+            "New_Op"
+          ],
+          "desc": "Hata düzeltme ve güncelleme."
+        },
+        "ANALOGY": {
+          "args": [
+            "A",
+            "B"
+          ],
+          "desc": "İki uzak yapı arasında benzerlik kur."
+        }
+      }
+    }
+  }
+}

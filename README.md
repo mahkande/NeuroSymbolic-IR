@@ -1,16 +1,40 @@
 ﻿# NeuroGraph OS
 
-ISA Tabanli Bilissel IR (Intermediate Representation) derleyicisi ve canli bilgi grafigi sistemi.
+## 1. Projenin Amaci
 
-Bu proje, dogal dil metnini opcode-temelli bir bilissel temsile cevirir ve sonuc IR zincirini node+edge grafigine isler.
-Amaç; sadece nedensellik (`CAUSE`) degil, ontolojik/epistemik/teleolojik/zamansal baglari da birlikte modellemektir.
+Bu projenin amaci, klasik **prompt -> kaynak kod -> token tahmini** yaklasiminin otesine gecerek:
+
+> **Insan niyeti (intent)** ile **makineye en yakin semantik temsil (LLVM IR)** arasinda  
+> **deterministik, analiz edilebilir ve tersine akil yurutebilen (inverse reasoning)**  
+> bir yapay zeka sistemi kurmaktir.
+
+Bu sistem:
+- Kod *yazan* degil
+- Programi *anlayan*, *temsil eden*, *analiz eden* ve *geri aciklayabilen* bir AI uretmeyi hedefler.
+
+AGI yolunda kritik olan **sembolik + noral hibrit akil** bu mimarinin merkezindedir.
+
+---
+
+## 2. Temel Fikir (High-Level Concept)
+
+Klasik LLM'ler:
+- Kaynak kodu token dizisi olarak gorur
+- Determinizm ve geri izlenebilirlik dusuktur
+
+Bu proje ise:
+- Programi **LLVM IR** seviyesinde ele alir
+- IR'yi **graph (CFG / DFG)** olarak temsil eder
+- Graph'i **embedding vektorlerine** donusturur
+- Bu vektorler uzerinde **reasoning ve inverse reasoning** yapar
 
 ## Ne Yapar?
-- Metni ISA semasina uygun IR komutlarina derler.
+- Girilen metni ISA semasina uygun IR komutlarina derler.
 - IR komutlarini kalici graph hafizasina yazar.
-- Tutarlilik kontrolu uygular (guvenli mod + opsiyonel native Z3).
+- Tutarlilik/celiski kontrolu uygular (guvenli mod + opsiyonel native Z3).
 - Dashboard uzerinden canli graph, opcode dagilimi ve sistem olaylarini gosterir.
 - Shadow/listener boru hattiyla dosya/oturum tabanli veri beslemesini destekler.
+- Uzun metinleri chunk ederek daha kapsamli IR cikarmaya calisir.
 
 ## IR Kategorileri
 - `ONTOLOGICAL`: `DEF_ENTITY`, `DEF_CONCEPT`, `ISA`, `EQUIV`, `ATTR`
@@ -30,6 +54,15 @@ ISA semasi: `spec/isa_v1.json`
 - `memory/knowledge_graph.py`: graph yazim/okuma kurallari
 - `main.py`: ana boru hatti (chunking, cache, validation, persistence)
 - `ui/dashboard.py`: canli kontrol paneli
+
+## Deterministik Reasoning Akisi
+1. Metin/iddia sisteme girer.
+2. ISA opcode'lari ile IR zinciri uretilir.
+3. IR graph hafizasina yazilir.
+4. Tutarlilik ve celiski kontrolleri uygulanir.
+5. Cikti, denetlenebilir bir reasoning iziyle birlikte saklanir.
+
+Bu akisin hedefi, LLM'i "sadece cevap veren" bir modelden "cevabini saglayabilen" bir yapiya tasimaktir.
 
 ## Kurulum (Lokal)
 1. Python 3.11+ ortami hazirla.

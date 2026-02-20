@@ -13,5 +13,13 @@
       "vector-only",
       "graph-only"
     ]
+  },
+  "evidence": {
+    "min_recall_at_k": 0.55,
+    "min_mrr": 0.35
+  },
+  "reliability": {
+    "max_unsupported_claim_rate": 0.20,
+    "max_contradiction_rate": 0.10
   }
 }

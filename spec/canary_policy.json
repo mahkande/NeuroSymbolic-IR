@@ -2,5 +2,7 @@
   "traffic_percent": 5,
   "max_error_rate": 0.15,
   "max_p95_latency_ms": 6000,
-  "min_pass_rate": 0.85
+  "min_pass_rate": 0.85,
+  "max_unsupported_claim_rate": 0.20,
+  "max_contradiction_rate": 0.10
 }

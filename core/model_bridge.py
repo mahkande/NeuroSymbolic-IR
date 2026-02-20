@@ -7,6 +7,7 @@ import sys
 import urllib.request
 
 from core.nlp_utils import normalize_and_match
+from core.fallback_rules import semantic_fallback_ir
 
 
 PROVIDER_SPECS = {
@@ -137,6 +138,10 @@ class NanbeigeBridge:
             "\nDikkat: Ornekler sadece format icindir.\n"
             "Sadece kullanicinin girdisinden gelen kavramlari kullan.\n"
             "Ciktida sadece JSON formatinda bir IR listesi uret.\n"
+            "Her satir su semaya uymali: {\"op\": \"OPCODE\", \"args\": [\"a\", \"b\"], "
+            "\"confidence\": 0.0-1.0(optional), \"source_span\": \"metin parcasi\"(optional), "
+            "\"evidence_ids\": [\"ev::0\"](optional)}.\n"
+            "Schema disi ekstra alan ekleme.\n"
             "Her arguman girdi metnindeki bir kavramdan gelmeli.\n"
             "Gereksiz kelimeleri (bir, ve, ile, icin vb.) kullanma.\n"
             "CAUSE yalnizca acik nedensellik sinyali varsa (cunku, dolayisiyla, -se/-sa) kullan.\n"
@@ -287,41 +292,7 @@ class NanbeigeBridge:
         return {"error": "Gecersiz JSON formati. LLM'den IR alinamadi."}
 
     def template_fallback(self, user_text):
-        text = (user_text or "").lower().strip()
-        irs = []
-        m = re.findall(r"([\wçğıöşü]+)\s+bir\s+([\wçğıöşü]+)(?:dir|dır|dur|dür|tir|tır|tur|tür)\b", text)
-        for x, y in m:
-            irs.append({"op": "ISA", "args": [x, y]})
-        m = re.findall(r"([\wçğıöşü]+)\s+([\wçğıöşü]+)(?:dir|dır|dur|dür|tir|tır|tur|tür)\b", text)
-        for x, y in m:
-            if y not in {"bir"}:
-                irs.append({"op": "ATTR", "args": [x, "ozellik", y]})
-        m = re.search(r"^([\wçğıöşü]+)(?:\s+[\wçğıöşü]+)*\s+([\wçğıöşü]+(?:mak|mek))\s+ist(?:iyor|edi|er)\b", text)
-        if m:
-            irs.append({"op": "WANT", "args": [m.group(1), m.group(2)]})
-        m = re.search(r"([\wçğıöşü]+)\s+([\wçğıöşü]+)\s+inan(?:iyor|ıyordu|di|dı|ir)\b", text)
-        if m:
-            irs.append({"op": "BELIEVE", "args": [m.group(1), m.group(2), "0.7"]})
-        m = re.search(r"([\wçğıöşü]+)\s+icin\s+([\wçğıöşü]+)", text)
-        if m:
-            irs.append({"op": "GOAL", "args": [m.group(2), m.group(1), "medium"]})
-        m = re.search(r"once\s+([\wçğıöşü]+)\s+sonra\s+([\wçğıöşü]+)", text)
-        if m:
-            irs.append({"op": "BEFORE", "args": [m.group(1), m.group(2)]})
-        m = re.search(r"([\wçğıöşü]+)\s+(iyi|kotu|guzel|cirkin)\b", text)
-        if m:
-            score = "1.0" if m.group(2) in {"iyi", "guzel"} else "-1.0"
-            irs.append({"op": "EVAL", "args": [m.group(1), score]})
-        m = re.search(r"([\wçğıöşü]+)\s+(?:ama|fakat|ancak)\s+([\wçğıöşü]+)", text)
-        if m:
-            irs.append({"op": "OPPOSE", "args": [m.group(1), m.group(2)]})
-        m = re.search(r"([\wçğıöşü]+)\s+(?:cunku|çünkü|dolayisiyla|dolayısıyla)\s+([\wçğıöşü]+)", text)
-        if m:
-            irs.append({"op": "CAUSE", "args": [m.group(1), m.group(2)]})
-        if not irs:
-            toks = re.findall(r"[\wçğıöşü]+", text)
-            if len(toks) >= 2:
-                irs.append({"op": "DO", "args": [toks[0], toks[1]]})
+        irs = semantic_fallback_ir(user_text or "", include_do=True)
         return irs if irs else None
 
     def feedback_correction(self, user_text, isa_schema, error_msg, max_retries=2, memory_terms=None):
@@ -362,3 +333,4 @@ class NanbeigeBridge:
             if mapped:
                 return json.dumps({"error": mapped}, ensure_ascii=False)
             return json.dumps({"error": str(exc)}, ensure_ascii=False)
+

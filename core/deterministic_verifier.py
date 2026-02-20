@@ -1,3 +1,4 @@
+import os
 from typing import Dict, List, Tuple
 
 
@@ -35,6 +36,7 @@ class DeterministicVerifierGate:
             self.profile_name = "balanced"
         self.strict_mode = bool(strict_mode or self.profile_name == "safe")
         self.policy = dict(self.POLICY_PROFILES[self.profile_name])
+        self.policy["require_evidence"] = 1.0 if os.getenv("COGNITIVE_REQUIRE_EVIDENCE", "0").strip().lower() in {"1", "true", "yes", "on"} else 0.0
         if self.strict_mode:
             self.policy["min_confidence"] = max(0.65, float(self.policy["min_confidence"]))
             self.policy["require_provenance"] = 1.0
@@ -80,6 +82,13 @@ class DeterministicVerifierGate:
                 src = str(instr.get("source", "")).strip()
                 if not prov and not src:
                     return False, f"Verifier: strict mode requires provenance/source (op={instr.get('op')})"
+            if bool(self.policy.get("require_evidence", 0.0) >= 1.0):
+                op = str(instr.get("op", "")).upper()
+                exempt = {"DEF_ENTITY", "DEF_CONCEPT", "ASSUME", "REFLECT", "CORRECT"}
+                if op not in exempt:
+                    ev = instr.get("evidence_ids", [])
+                    if not isinstance(ev, list) or not any(str(x).strip() for x in ev):
+                        return False, f"Verifier: unsupported claim rejected (op={op}, evidence_ids missing)"
         return True, "ok"
 
     @staticmethod
@@ -168,5 +177,11 @@ class DeterministicVerifierGate:
 
         is_ok, logic_msg = self.logic_engine.verify_consistency(history_ir + checked)
         if not is_ok:
-            return False, f"Verifier: rejected by deterministic logic ({logic_msg})", []
+            core = []
+            try:
+                core = self.logic_engine.find_minimal_unsat_core(history_ir + checked)
+            except Exception:
+                core = []
+            core_msg = f"; counterexample_core={core[:2]}" if core else ""
+            return False, f"Verifier: rejected by deterministic logic ({logic_msg}{core_msg})", []
         return True, f"Verifier: accepted ({logic_msg}; profile={self.profile_name}; risk={risk:.2f})", checked

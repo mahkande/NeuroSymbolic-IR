@@ -9,10 +9,13 @@ from typing import List
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
+from core.fallback_rules import semantic_fallback_ir
 from core.logic_engine import LogicEngine
 from core.model_bridge import NanbeigeBridge
 from core.nlp_utils import grammar_filter_ir, rebalance_relations
 from core.parser import IRParser
+from core.rule_learner import propose_llm_rule_candidate
+from core.quality_metrics import record_fallback_usage
 from core.validator import CognitiveValidator
 from main import load_global_graph, save_global_graph
 from memory.knowledge_graph import CognitiveMemory
@@ -139,7 +142,14 @@ class FileListenerService:
                 ir.append({"op": op, "args": [u, v]})
         return ir
 
-    def _validate_ir_chain(self, ir_chain):
+    @staticmethod
+    def _is_do_only(ir_chain):
+        rows = [r for r in (ir_chain or []) if isinstance(r, dict)]
+        if not rows:
+            return False
+        return all(str(r.get("op", "")).upper() == "DO" for r in rows)
+
+    def _validate_ir_chain(self, ir_chain, known_entities=None):
         clean = []
         for instr in ir_chain:
             if not isinstance(instr, dict):
@@ -148,7 +158,7 @@ class FileListenerService:
             args = instr.get("args", [])
             if not isinstance(args, list):
                 continue
-            is_valid, msg = self.validator.validate_instruction(op, args)
+            is_valid, msg = self.validator.validate_instruction(op, args, known_entities=known_entities)
             if is_valid:
                 clean.append({"op": op, "args": args})
             else:
@@ -167,28 +177,95 @@ class FileListenerService:
         )
         if isinstance(raw, dict) and "error" in raw:
             self._log_processed("groq_error", {"text": block_text, "error": raw["error"]})
-            return
+            parsed = semantic_fallback_ir(block_text, include_do=True)
+            if parsed:
+                record_fallback_usage("file_listener", block_text, parsed, reason="compile_error")
+                self._log_processed("fallback_used", {"text": block_text[:200], "edges": len(parsed), "reason": "compile_error"})
+            else:
+                return
+        else:
+            parsed = self.parser.parse_raw_output(
+                raw,
+                allowed_ops=set(self.validator.opcodes.keys()),
+                strict_schema=True,
+            )
+            if not isinstance(parsed, list):
+                self._log_processed("parse_error", {"text": block_text, "raw": raw})
+                parsed = semantic_fallback_ir(block_text, include_do=True)
+                if parsed:
+                    record_fallback_usage("file_listener", block_text, parsed, reason="parse_error")
+                    self._log_processed("fallback_used", {"text": block_text[:200], "edges": len(parsed), "reason": "parse_error"})
+                else:
+                    return
 
-        parsed = self.parser.parse_raw_output(raw)
-        if not isinstance(parsed, list):
-            self._log_processed("parse_error", {"text": block_text, "raw": raw})
-            return
-
-        ir_chain = self._validate_ir_chain(parsed)
+        known_entities = list(graph.nodes)
+        ir_chain = self._validate_ir_chain(parsed, known_entities=known_entities)
         if not ir_chain:
-            self._log_processed("empty_ir", {"text": block_text})
-            return
+            fallback_chain = semantic_fallback_ir(block_text, include_do=True)
+            ir_chain = self._validate_ir_chain(fallback_chain, known_entities=known_entities)
+            if ir_chain:
+                record_fallback_usage("file_listener", block_text, ir_chain, reason="empty_ir")
+                self._log_processed("fallback_used", {"text": block_text[:200], "edges": len(ir_chain), "reason": "empty_ir"})
+            else:
+                self._log_processed("empty_ir", {"text": block_text})
+                return
 
         ir_chain, gf_logs, attr_augment = grammar_filter_ir(ir_chain, known_entities=list(graph.nodes))
         if attr_augment:
             ir_chain.extend(attr_augment)
         ir_chain, rb_logs = rebalance_relations(ir_chain, block_text)
-        ir_chain = self._validate_ir_chain(ir_chain)
+        ir_chain = self._validate_ir_chain(ir_chain, known_entities=known_entities)
         if gf_logs or rb_logs:
             self._log_processed("filter_log", {"text": block_text[:200], "logs": (gf_logs + rb_logs)[-8:]})
         if not ir_chain:
+            proposal = propose_llm_rule_candidate(
+                block_text,
+                self.validator,
+                provider=self.bridge.provider,
+                model_name=self.bridge.model_name,
+                api_key=self.bridge.api_key,
+                source="file_listener_llm_rule_bootstrap",
+            )
+            if proposal:
+                cand = proposal.get("candidate") or {}
+                self._log_processed(
+                    "rule_bootstrap",
+                    {
+                        "text": block_text[:200],
+                        "candidate_id": cand.get("id", ""),
+                        "confidence": float(proposal.get("confidence", 0.0) or 0.0),
+                        "question": str(proposal.get("question", "")).strip(),
+                    },
+                )
             self._log_processed("empty_ir_after_filter", {"text": block_text})
             return
+
+        if self._is_do_only(ir_chain):
+            proposal = propose_llm_rule_candidate(
+                block_text,
+                self.validator,
+                provider=self.bridge.provider,
+                model_name=self.bridge.model_name,
+                api_key=self.bridge.api_key,
+                source="file_listener_llm_rule_bootstrap",
+            )
+            if proposal:
+                cand = proposal.get("candidate") or {}
+                q = str(proposal.get("question", "")).strip()
+                conf = float(proposal.get("confidence", 0.0) or 0.0)
+                self._log_processed(
+                    "rule_bootstrap",
+                    {
+                        "text": block_text[:200],
+                        "candidate_id": cand.get("id", ""),
+                        "confidence": conf,
+                        "question": q,
+                    },
+                )
+                if proposal.get("auto_apply"):
+                    cand_ir = self._validate_ir_chain(proposal.get("ir", []), known_entities=known_entities)
+                    if cand_ir and not self._is_do_only(cand_ir):
+                        ir_chain = cand_ir
 
         history_ir = self._graph_to_ir(graph, self.validator.opcodes)
         is_consistent, logic_msg = self.logic.verify_consistency(history_ir + ir_chain)

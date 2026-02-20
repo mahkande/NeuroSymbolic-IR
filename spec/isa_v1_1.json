@@ -261,5 +261,298 @@
         }
       }
     }
+  },
+  "validation": {
+    "enums": {
+      "priority": [
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    },
+    "op_constraints": {
+      "DEF_ENTITY": {
+        "arg_types": [
+          "entity",
+          "type"
+        ],
+        "subject_arg_indices": [
+          0
+        ]
+      },
+      "DEF_CONCEPT": {
+        "arg_types": [
+          "concept",
+          "type"
+        ]
+      },
+      "ISA": {
+        "arg_types": [
+          "entity_or_concept",
+          "entity_or_concept"
+        ],
+        "distinct_pairs": [
+          [
+            0,
+            1
+          ]
+        ]
+      },
+      "EQUIV": {
+        "arg_types": [
+          "entity_or_concept",
+          "entity_or_concept"
+        ],
+        "distinct_pairs": [
+          [
+            0,
+            1
+          ]
+        ]
+      },
+      "ATTR": {
+        "arg_types": [
+          "entity_or_concept",
+          "relation_key",
+          "attr_value"
+        ]
+      },
+      "KNOW": {
+        "arg_types": [
+          "entity",
+          "fact"
+        ],
+        "subject_arg_indices": [
+          0
+        ]
+      },
+      "BELIEVE": {
+        "arg_types": [
+          "entity",
+          "fact",
+          "confidence"
+        ],
+        "subject_arg_indices": [
+          0
+        ]
+      },
+      "DOUBT": {
+        "arg_types": [
+          "entity",
+          "fact"
+        ],
+        "subject_arg_indices": [
+          0
+        ]
+      },
+      "WONDER": {
+        "arg_types": [
+          "entity",
+          "question"
+        ],
+        "subject_arg_indices": [
+          0
+        ]
+      },
+      "ASSUME": {
+        "arg_types": [
+          "fact"
+        ]
+      },
+      "WANT": {
+        "arg_types": [
+          "entity",
+          "state"
+        ],
+        "subject_arg_indices": [
+          0
+        ]
+      },
+      "AVOID": {
+        "arg_types": [
+          "entity",
+          "state"
+        ],
+        "subject_arg_indices": [
+          0
+        ]
+      },
+      "GOAL": {
+        "arg_types": [
+          "entity",
+          "state",
+          "priority"
+        ],
+        "subject_arg_indices": [
+          0
+        ]
+      },
+      "INTEND": {
+        "arg_types": [
+          "entity",
+          "action"
+        ],
+        "subject_arg_indices": [
+          0
+        ]
+      },
+      "EVAL": {
+        "arg_types": [
+          "state",
+          "score"
+        ]
+      },
+      "DO": {
+        "arg_types": [
+          "entity",
+          "action"
+        ],
+        "subject_arg_indices": [
+          0
+        ]
+      },
+      "CAUSE": {
+        "arg_types": [
+          "state",
+          "state"
+        ],
+        "distinct_pairs": [
+          [
+            0,
+            1
+          ]
+        ]
+      },
+      "PREVENT": {
+        "arg_types": [
+          "state",
+          "state"
+        ],
+        "distinct_pairs": [
+          [
+            0,
+            1
+          ]
+        ]
+      },
+      "IMPLY": {
+        "arg_types": [
+          "state",
+          "state"
+        ],
+        "distinct_pairs": [
+          [
+            0,
+            1
+          ]
+        ]
+      },
+      "OPPOSE": {
+        "arg_types": [
+          "entity_or_concept",
+          "entity_or_concept"
+        ],
+        "distinct_pairs": [
+          [
+            0,
+            1
+          ]
+        ]
+      },
+      "TRIGGER": {
+        "arg_types": [
+          "event",
+          "action"
+        ],
+        "distinct_pairs": [
+          [
+            0,
+            1
+          ]
+        ]
+      },
+      "MUST": {
+        "arg_types": [
+          "action"
+        ]
+      },
+      "MAY": {
+        "arg_types": [
+          "action"
+        ]
+      },
+      "FORBID": {
+        "arg_types": [
+          "action"
+        ]
+      },
+      "CAN": {
+        "arg_types": [
+          "entity",
+          "ability"
+        ],
+        "subject_arg_indices": [
+          0
+        ]
+      },
+      "BEFORE": {
+        "arg_types": [
+          "event",
+          "event"
+        ],
+        "distinct_pairs": [
+          [
+            0,
+            1
+          ]
+        ]
+      },
+      "WHILE": {
+        "arg_types": [
+          "state",
+          "action"
+        ]
+      },
+      "START": {
+        "arg_types": [
+          "process"
+        ]
+      },
+      "END": {
+        "arg_types": [
+          "process"
+        ]
+      },
+      "REFLECT": {
+        "arg_types": [
+          "ir_chain_ref"
+        ]
+      },
+      "CORRECT": {
+        "arg_types": [
+          "opcode",
+          "opcode"
+        ],
+        "distinct_pairs": [
+          [
+            0,
+            1
+          ]
+        ]
+      },
+      "ANALOGY": {
+        "arg_types": [
+          "entity_or_concept",
+          "entity_or_concept"
+        ],
+        "distinct_pairs": [
+          [
+            0,
+            1
+          ]
+        ]
+      }
+    }
   }
 }

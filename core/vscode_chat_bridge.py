@@ -1,17 +1,22 @@
 ﻿import hashlib
 import json
 import os
+import re
 import threading
 import time
+import atexit
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from core.listener import submit_shadow_text
+from core.listener import start_shadow_listener, submit_shadow_text
+from core.intervention_layer import analyze_intervention
 
 
 BRIDGE_EVENTS_PATH = Path("memory/vscode_bridge_events.jsonl")
-FORWARD_ASSISTANT = os.getenv("COGNITIVE_FORWARD_ASSISTANT", "0").strip().lower() in {"1", "true", "yes", "on"}
+FORWARD_ASSISTANT = os.getenv("COGNITIVE_FORWARD_ASSISTANT", "1").strip().lower() in {"1", "true", "yes", "on"}
+INTERVENTION_ENABLED = os.getenv("COGNITIVE_INTERVENTION_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+AUTO_START_BRIDGE = os.getenv("COGNITIVE_BRIDGE_AUTOSTART", "1").strip().lower() in {"1", "true", "yes", "on"}
 
 
 class VSCodeChatBridgeService:
@@ -161,6 +166,10 @@ class VSCodeChatBridgeService:
         try:
             obj = json.loads(line)
         except Exception:
+            # Fallback capture: unknown/new session line formats are still mirrored.
+            recovered = self._normalize_payload(line)
+            if len(recovered) >= 24:
+                self._forward_unique(recovered, f"bridge_fallback:{path.name}", role="user")
             return
 
         # Codex session format:
@@ -246,17 +255,14 @@ class VSCodeChatBridgeService:
                         self._forward_unique(rtext, f"vscode_assistant:{path.name}", role="assistant")
 
     def _forward_unique(self, text: str, source: str, role: str):
-        payload = (text or "").strip()
+        payload = self._normalize_payload(text)
         if len(payload) < 10:
             return
         if role == "assistant" and not FORWARD_ASSISTANT:
             return
-        # Drop meta/instruction-heavy blocks that pollute graph semantics.
-        lowered = payload.lower()
-        if "agents.md" in lowered or "my request for codex" in lowered:
-            return
         if payload.count("```") >= 2:
             return
+
         sig = hashlib.sha1((role + "|" + payload).encode("utf-8", errors="ignore")).hexdigest()
         if sig in self._seen:
             return
@@ -272,6 +278,36 @@ class VSCodeChatBridgeService:
             else:
                 self._stats["forwarded_assistant"] += 1
             self._event("bridge_forward", f"forwarded_{role}", {"source": source, "len": len(payload)})
+
+            # Intervention layer: chat akisini sadece kaydetmek yerine gerektiğinde araya uyarı enjekte et.
+            if role == "user" and INTERVENTION_ENABLED:
+                intr = analyze_intervention(payload, source=source)
+                if intr:
+                    intr_msg = str(intr.get("message", "")).strip()
+                    if intr_msg:
+                        submit_shadow_text(intr_msg, source=f"intervention:{source}")
+                        self._event(
+                            "bridge_intervention",
+                            "intervention_injected",
+                            {"source": source, "reason": intr.get("reason", ""), "contradiction": bool(intr.get("contradiction"))},
+                        )
+
+    @staticmethod
+    def _normalize_payload(text: str) -> str:
+        payload = (text or "").strip()
+        if not payload:
+            return ""
+
+        # Codex wrappers include AGENTS/IDE metadata and a request block.
+        m = re.search(r"##\s*My request for Codex:\s*(.+)$", payload, re.IGNORECASE | re.DOTALL)
+        if m:
+            payload = m.group(1).strip()
+
+        payload = re.sub(r"<environment_context>.*?</environment_context>", " ", payload, flags=re.IGNORECASE | re.DOTALL)
+        payload = re.sub(r"#\s*AGENTS\.md.*?(?=##\s*My request for Codex:|$)", " ", payload, flags=re.IGNORECASE | re.DOTALL)
+        payload = re.sub(r"#\s*Context from my IDE setup:.*?(?=##\s*My request for Codex:|$)", " ", payload, flags=re.IGNORECASE | re.DOTALL)
+        payload = re.sub(r"\s+", " ", payload).strip()
+        return payload
 
     def _event(self, kind: str, message: str, extra: Optional[dict] = None):
         BRIDGE_EVENTS_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -319,3 +355,20 @@ def get_vscode_chat_bridge_status() -> dict:
                 "started_at": "",
             }
         return _BRIDGE.status()
+
+
+def _bootstrap_services():
+    try:
+        start_shadow_listener()
+    except Exception:
+        pass
+    try:
+        start_vscode_chat_bridge()
+    except Exception:
+        pass
+
+
+if AUTO_START_BRIDGE:
+    _bootstrap_services()
+    atexit.register(stop_vscode_chat_bridge)
+

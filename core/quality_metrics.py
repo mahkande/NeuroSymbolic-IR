@@ -6,6 +6,7 @@ from typing import Dict, Iterable, List
 
 
 DEFAULT_QUALITY_LOG = Path("memory/opcode_quality.jsonl")
+DEFAULT_FALLBACK_LOG = Path("memory/fallback_usage.jsonl")
 
 
 def edge_type_counts(graph) -> Dict[str, int]:
@@ -140,3 +141,63 @@ def aggregate_opcode_quality(path: Path = DEFAULT_QUALITY_LOG, max_rows: int = 2
             "fn": fni,
         }
     return out
+
+
+def record_fallback_usage(
+    source: str,
+    text: str,
+    ir_chain: List[dict],
+    reason: str = "",
+    path: Path = DEFAULT_FALLBACK_LOG,
+):
+    rows = [r for r in (ir_chain or []) if isinstance(r, dict)]
+    if not rows:
+        return
+    ops = [str(r.get("op", "")).upper().strip() for r in rows if str(r.get("op", "")).strip()]
+    total = len(ops)
+    useful = sum(1 for op in ops if op and op != "DO")
+    payload = {
+        "source": str(source or "unknown"),
+        "reason": str(reason or ""),
+        "text_len": len(str(text or "")),
+        "ops": ops,
+        "total_edges": total,
+        "useful_edges": useful,
+        "useful_ratio": round((useful / total), 4) if total else 0.0,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+
+def aggregate_fallback_kpi(path: Path = DEFAULT_FALLBACK_LOG, max_rows: int = 4000):
+    if not path.exists():
+        return {
+            "rows": 0,
+            "avg_useful_ratio": 0.0,
+            "opcode_counts": {},
+            "source_counts": {},
+        }
+    lines = path.read_text(encoding="utf-8").splitlines()[-max_rows:]
+    total_rows = 0
+    useful_ratio_sum = 0.0
+    op_counts = Counter()
+    src_counts = Counter()
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except Exception:
+            continue
+        total_rows += 1
+        useful_ratio_sum += float(row.get("useful_ratio", 0.0) or 0.0)
+        src_counts[str(row.get("source", "unknown"))] += 1
+        for op in (row.get("ops", []) or []):
+            sop = str(op).upper().strip()
+            if sop:
+                op_counts[sop] += 1
+    return {
+        "rows": total_rows,
+        "avg_useful_ratio": round((useful_ratio_sum / total_rows), 4) if total_rows else 0.0,
+        "opcode_counts": dict(op_counts),
+        "source_counts": dict(src_counts),
+    }

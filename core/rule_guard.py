@@ -39,6 +39,40 @@ def _fingerprint(pattern: str, op: str, args: List[str]) -> str:
     return f"{pattern}|{op}|{'|'.join(args)}"
 
 
+def _norm_token(text: str) -> str:
+    token = (text or "").strip().lower()
+    token = re.sub(r"[^\w\s\.-]", " ", token)
+    token = re.sub(r"\s+", "_", token).strip("_")
+    return token
+
+
+def materialize_args_template(args_template: List[str], match) -> List[str]:
+    """
+    Expand ['$1', '$2_suffix'] style templates with regex capture groups.
+    """
+    out: List[str] = []
+    for raw_tpl in args_template or []:
+        tpl = str(raw_tpl)
+
+        def repl(m):
+            idx = int(m.group(1))
+            if not match:
+                return ""
+            try:
+                return _norm_token(match.group(idx))
+            except Exception:
+                return ""
+
+        rendered = re.sub(r"\$(\d+)", repl, tpl).strip()
+        if not rendered:
+            continue
+        if re.fullmatch(r"-?\d+(\.\d+)?", rendered):
+            out.append(rendered)
+        else:
+            out.append(_norm_token(rendered))
+    return out
+
+
 def _ensure_stores():
     if not RULES_PATH.exists():
         _save_json(RULES_PATH, {"version": 1, "rules": []})
@@ -67,11 +101,13 @@ def get_review_queue(limit: int = 50) -> List[dict]:
 def get_rule_stats() -> dict:
     rules = get_rules()
     queue = get_review_queue(limit=10000)
+    require_human = len([c for c in queue if bool(c.get("require_human"))])
     return {
         "total_rules": len(rules),
         "active_rules": len([r for r in rules if r.get("status") == "active"]),
         "disabled_rules": len([r for r in rules if r.get("status") == "disabled"]),
         "pending_candidates": len(queue),
+        "pending_human_review": require_human,
     }
 
 
@@ -85,7 +121,17 @@ def register_unknown_pattern(text: str, source: str = "", reason: str = ""):
     )
 
 
-def register_candidate_rule(pattern: str, op: str, args: List[str], example_text: str, source: str = "auto") -> dict:
+def register_candidate_rule(
+    pattern: str,
+    op: str,
+    args: List[str],
+    example_text: str,
+    source: str = "auto",
+    args_template: Optional[List[str]] = None,
+    confidence: Optional[float] = None,
+    clarification_question: str = "",
+    require_human: bool = False,
+) -> dict:
     _ensure_stores()
     data = _load_json(CANDIDATES_PATH, {"version": 1, "candidates": []})
     candidates = data.get("candidates", [])
@@ -113,6 +159,17 @@ def register_candidate_rule(pattern: str, op: str, args: List[str], example_text
         "created_at": _now(),
         "last_seen": _now(),
     }
+    if isinstance(args_template, list) and args_template:
+        cand["args_template"] = [str(x) for x in args_template]
+    if confidence is not None:
+        try:
+            cand["confidence"] = float(confidence)
+        except Exception:
+            pass
+    if clarification_question:
+        cand["clarification_question"] = str(clarification_question)
+    if require_human:
+        cand["require_human"] = True
     candidates.append(cand)
     data["candidates"] = candidates
     _save_json(CANDIDATES_PATH, data)
@@ -134,12 +191,20 @@ def register_candidate_from_example(text: str, ir_chain: List[dict], source: str
 
 def _is_rule_safe(rule: dict, validator) -> bool:
     try:
-        re.compile(rule.get("pattern", ""))
+        compiled = re.compile(rule.get("pattern", ""))
     except Exception:
         return False
     op = rule.get("op")
     args = rule.get("args", [])
-    if not isinstance(args, list):
+    args_template = rule.get("args_template")
+    if isinstance(args_template, list) and args_template:
+        sample = str(rule.get("example_text", "")).strip().lower()
+        sample = re.sub(r"\s+", " ", sample)
+        m = compiled.search(sample)
+        if not m:
+            return False
+        args = materialize_args_template(args_template, m)
+    if not isinstance(args, list) or not args:
         return False
     ok, _ = validator.validate_instruction(op, args)
     return bool(ok)
@@ -156,6 +221,7 @@ def _activate_candidate(cand: dict):
                 "pattern": cand.get("pattern"),
                 "op": cand.get("op"),
                 "args": cand.get("args"),
+                "args_template": cand.get("args_template", []),
                 "status": "active",
                 "priority": 100,
                 "created_at": _now(),
@@ -203,6 +269,8 @@ def auto_review_candidates(validator, min_hits: int = 3) -> dict:
     approved = 0
     rejected = 0
     for c in queue:
+        if bool(c.get("require_human")):
+            continue
         if int(c.get("hits", 0)) < int(min_hits):
             continue
         if approve_candidate(c.get("id"), validator):
@@ -224,15 +292,20 @@ def apply_active_rules(text: str, validator) -> List[dict]:
         if not pattern:
             continue
         try:
-            if not re.search(pattern, payload):
+            m = re.search(pattern, payload)
+            if not m:
                 continue
         except Exception:
             continue
 
         op = rule.get("op")
-        args = rule.get("args", [])
-        if not isinstance(args, list):
-            continue
+        args_template = rule.get("args_template")
+        if isinstance(args_template, list) and args_template:
+            args = materialize_args_template(args_template, m)
+        else:
+            args = rule.get("args", [])
+            if not isinstance(args, list):
+                continue
         ok, _ = validator.validate_instruction(op, args)
         if not ok:
             continue

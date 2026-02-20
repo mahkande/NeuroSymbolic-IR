@@ -10,6 +10,7 @@ import networkx as nx
 from core.inference_engine import InferenceEngine
 from core.deterministic_verifier import DeterministicVerifierGate
 from core.embedding_pipeline import GraphEmbeddingPipeline
+from core.fallback_rules import semantic_fallback_ir
 from core.hybrid_semantics import RelationClassifier, RuleBasedExtractorV2, fuse_relations
 from core.hybrid_retriever import HybridRetriever
 from core.logic_engine import LogicEngine
@@ -18,10 +19,14 @@ from core.model_bridge import NanbeigeBridge
 from core.nlp_utils import grammar_filter_ir, rebalance_relations
 from core.parser import IRParser
 from core.quality_metrics import drift_alerts, record_opcode_quality
+from core.quality_metrics import record_fallback_usage
 from core.reasoning_trace import ReasoningTraceStore
 from core.rule_engine import DeterministicRuleEngine
+from core.rule_learner import propose_llm_rule_candidate
 from core.truth_maintenance import TruthMaintenanceEngine
 from core.validator import CognitiveValidator
+from core.evidence import build_proof_objects
+from core.backward_verifier import BackwardVerifier
 from memory.conceptnet_service import ConceptNetService
 from memory.graph_store import GraphStore
 from memory.knowledge_graph import CognitiveMemory
@@ -204,6 +209,7 @@ def run_cognitive_os(user_input):
     retriever = HybridRetriever(memory.graph, _VECTOR_STORE, dim=_VECTOR_STORE.dim)
     retrieval_mode = get_default_retrieval_mode()
     trace_store = ReasoningTraceStore()
+    backward_verifier = BackwardVerifier()
     rule_engine = DeterministicRuleEngine(memory.graph)
     truth_maintenance = TruthMaintenanceEngine(memory.graph)
     rb_v2 = RuleBasedExtractorV2()
@@ -212,6 +218,14 @@ def run_cognitive_os(user_input):
 
     logs = []
     isa_schema = validator.isa
+    allowed_ops = set(validator.opcodes.keys())
+    proof_objects = []
+
+    def is_do_only(chain):
+        rows = [r for r in (chain or []) if isinstance(r, dict)]
+        if not rows:
+            return False
+        return all(str(r.get("op", "")).upper() == "DO" for r in rows)
 
     def split_input_chunks(text: str, max_words: int = 280):
         raw = (text or "").strip()
@@ -242,7 +256,7 @@ def run_cognitive_os(user_input):
 
     def finalize(z3_status):
         save_global_graph(memory.graph)
-        return {"graph": memory.graph, "log": logs, "z3_status": z3_status}
+        return {"graph": memory.graph, "log": logs, "z3_status": z3_status, "proofs": proof_objects}
 
     main_entity = user_input.split()[0]
     context = memory.get_relevant_context(main_entity)
@@ -281,15 +295,33 @@ def run_cognitive_os(user_input):
             )
             if isinstance(llm_raw_response, dict) and "error" in llm_raw_response:
                 logs.append(f"LLM Cikti Hatasi (chunk {idx}/{len(chunks)}): {llm_raw_response['error']}")
+                fallback_chunk = semantic_fallback_ir(chunk, include_do=True)
+                if fallback_chunk:
+                    ir_chain.extend(fallback_chunk)
+                    record_fallback_usage("main", chunk, fallback_chunk, reason="compile_error")
+                    logs.append(f"[FALLBACK] Chunk {idx}/{len(chunks)} semantik fallback ile {len(fallback_chunk)} bag uretildi.")
                 continue
 
-            parsed_chunk = parser.parse_raw_output(llm_raw_response)
+            parsed_chunk = parser.parse_raw_output(llm_raw_response, allowed_ops=allowed_ops, strict_schema=True)
             if isinstance(parsed_chunk, dict) and "error" in parsed_chunk:
                 logs.append(f"LLM Parse Hatasi (chunk {idx}/{len(chunks)}): {parsed_chunk['error']}")
+                fallback_chunk = semantic_fallback_ir(chunk, include_do=True)
+                if fallback_chunk:
+                    ir_chain.extend(fallback_chunk)
+                    record_fallback_usage("main", chunk, fallback_chunk, reason="parse_error")
+                    logs.append(f"[FALLBACK] Parse hatasi sonrasi chunk {idx}/{len(chunks)} icin {len(fallback_chunk)} semantik bag eklendi.")
                 continue
             if isinstance(parsed_chunk, list):
                 ir_chain.extend(parsed_chunk)
 
+        if not ir_chain:
+            fallback_all = semantic_fallback_ir(user_input, include_do=True)
+            if fallback_all:
+                ir_chain.extend(fallback_all)
+                record_fallback_usage("main", user_input, fallback_all, reason="all_chunks_empty")
+                logs.append(f"[FALLBACK] Tum chunklar bos kaldi, tum metinden {len(fallback_all)} semantik bag uretildi.")
+            else:
+                return finalize("Hata")
         if not ir_chain:
             return finalize("Hata")
         base_predicted_ops = [str(i.get("op", "")) for i in (ir_chain or []) if isinstance(i, dict)]
@@ -310,7 +342,7 @@ def run_cognitive_os(user_input):
         if isinstance(arb_raw, dict) and "error" in arb_raw:
             logs.append(f"[HYBRID] LLM arbitration hatasi: {arb_raw['error']}")
             return []
-        parsed = parser.parse_raw_output(arb_raw)
+        parsed = parser.parse_raw_output(arb_raw, allowed_ops=allowed_ops, strict_schema=True)
         return parsed if isinstance(parsed, list) else []
 
     ir_chain, hybrid_logs = fuse_relations(
@@ -331,8 +363,40 @@ def run_cognitive_os(user_input):
     ir_chain, rb_logs = rebalance_relations(ir_chain, user_input)
     logs.extend(rb_logs)
     if not ir_chain:
-        logs.append("[GRAMMAR_FILTER] Tum IR baglari elendi; hafizaya yazilmadi.")
-        return finalize("Hata")
+        proposal = propose_llm_rule_candidate(
+            user_input,
+            validator,
+            provider=bridge.provider,
+            model_name=bridge.model_name,
+            api_key=bridge.api_key,
+            source="main_llm_rule_bootstrap",
+        )
+        if proposal and proposal.get("ir"):
+            ir_chain = proposal.get("ir", [])
+            logs.append("[FALLBACK] Bos IR sonrasi LLM rule bootstrap denendi.")
+            if proposal.get("question"):
+                logs.append(f"[RULE_BOOTSTRAP] Soru: {proposal.get('question')}")
+        if not ir_chain:
+            logs.append("[GRAMMAR_FILTER] Tum IR baglari elendi; hafizaya yazilmadi.")
+            return finalize("Hata")
+
+    if is_do_only(ir_chain):
+        proposal = propose_llm_rule_candidate(
+            user_input,
+            validator,
+            provider=bridge.provider,
+            model_name=bridge.model_name,
+            api_key=bridge.api_key,
+            source="main_llm_rule_bootstrap",
+        )
+        if proposal:
+            if proposal.get("question"):
+                logs.append(f"[RULE_BOOTSTRAP] Soru: {proposal.get('question')}")
+            if proposal.get("auto_apply"):
+                cand_ir = proposal.get("ir", [])
+                if cand_ir and not is_do_only(cand_ir):
+                    ir_chain = cand_ir
+                    logs.append("[FALLBACK] DO-only IR yerine LLM rule bootstrap IR kullanildi.")
 
     history_ir_for_gate = []
     if isinstance(memory.graph, nx.MultiDiGraph):
@@ -346,6 +410,21 @@ def run_cognitive_os(user_input):
             if op in validator.opcodes:
                 history_ir_for_gate.append({"op": op, "args": [u, v]})
 
+    prewrite_evidence = retriever.retrieve(user_input, focus_terms=[main_entity], top_k=8, mode=retrieval_mode)
+    proof_objects, ir_chain = build_proof_objects(ir_chain, prewrite_evidence)
+    supported = sum(1 for p in proof_objects if p.get("verdict") == "supported")
+    if proof_objects:
+        logs.append(f"[PROOF] supported={supported}/{len(proof_objects)}")
+        trace_store.record_claim_proofs(main_entity, proof_objects, max_records=96)
+
+    if os.getenv("COGNITIVE_USE_BACKWARD_VERIFIER", "1").strip().lower() in {"1", "true", "yes", "on"}:
+        bwd_ok, bwd_msg, bwd_report = backward_verifier.verify(ir_chain, history_ir_for_gate, proof_objects=proof_objects)
+        logs.append(f"[BACKWARD_VERIFIER] {bwd_msg}")
+        if not bwd_ok:
+            unsupported = [r for r in (bwd_report or []) if not r.get("supported")]
+            logs.append(f"[BACKWARD_VERIFIER] unsupported examples: {str(unsupported[:2])}")
+            return finalize("UNSAT")
+
     gate_ok, gate_msg, gated_ir = verifier.verify(ir_chain, history_ir=history_ir_for_gate)
     logs.append(f"[VERIFIER] {gate_msg}")
     if not gate_ok:
@@ -356,7 +435,11 @@ def run_cognitive_os(user_input):
         cache.add_ir(user_input, ir_chain)
 
     for instr in ir_chain:
-        is_valid, msg = validator.validate_instruction(instr["op"], instr["args"])
+        is_valid, msg = validator.validate_instruction(
+            instr["op"],
+            instr["args"],
+            known_entities=list(memory.graph.nodes),
+        )
         if not is_valid:
             logs.append(f"Sozdizimi Hatasi: {msg}")
             corrected = bridge.feedback_correction(
@@ -365,7 +448,7 @@ def run_cognitive_os(user_input):
                 msg,
                 memory_terms=list(memory.graph.nodes),
             )
-            ir_chain = parser.parse_raw_output(corrected)
+            ir_chain = parser.parse_raw_output(corrected, allowed_ops=allowed_ops, strict_schema=True)
             if isinstance(ir_chain, dict) and "error" in ir_chain:
                 logs.append(f"LLM Cikti Hatasi: {ir_chain['error']}")
                 return finalize("Hata")
@@ -398,7 +481,7 @@ def run_cognitive_os(user_input):
                 old_ir.append({"op": node["op"], "args": node["args"]})
 
         revision_raw = bridge.request_revision(unsat_core, old_ir, isa_schema)
-        revision_ir = parser.parse_raw_output(revision_raw)
+        revision_ir = parser.parse_raw_output(revision_raw, allowed_ops=allowed_ops, strict_schema=True)
         if isinstance(revision_ir, dict) and "error" in revision_ir:
             logs.append(f"LLM Cikti Hatasi: {revision_ir['error']}")
             return finalize("Hata")
@@ -429,7 +512,7 @@ def run_cognitive_os(user_input):
             conflict_msg,
             memory_terms=list(memory.graph.nodes),
         )
-        ir_chain = parser.parse_raw_output(corrected)
+        ir_chain = parser.parse_raw_output(corrected, allowed_ops=allowed_ops, strict_schema=True)
         if isinstance(ir_chain, dict) and "error" in ir_chain:
             logs.append(f"LLM Cikti Hatasi: {ir_chain['error']}")
             return finalize("Hata")

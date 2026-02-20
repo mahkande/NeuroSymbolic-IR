@@ -18,3 +18,5 @@
 {"predicted": {"DO": 1}, "final": {"DO": 1}}
 {"predicted": {"DO": 1}, "final": {"DO": 1}}
 {"predicted": {"DO": 1}, "final": {"DO": 1}}
+{"predicted": {"DO": 1}, "final": {"DO": 1}}
+{"predicted": {"ATTR": 2, "CAUSE": 2}, "final": {"CAUSE": 2, "ATTR": 2}}

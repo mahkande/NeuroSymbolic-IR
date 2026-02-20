@@ -138,7 +138,7 @@ class RelationClassifier:
 
         max_score = max(scores.values()) if scores else 0.0
         if max_score <= 0:
-            return {"DO": 0.55}
+            return {}
 
         probs: Dict[str, float] = {}
         for op, score in scores.items():

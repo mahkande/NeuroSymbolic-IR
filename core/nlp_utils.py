@@ -6,6 +6,8 @@ import sys
 from contextlib import redirect_stderr, redirect_stdout
 from typing import Iterable, List, Sequence, Tuple
 
+from core.fallback_rules import merge_fallback, semantic_fallback_ir
+
 
 def _ensure_zeyrek():
     try:
@@ -495,26 +497,36 @@ def grammar_filter_ir(
                 new_args.append("_".join(out_toks))
 
         if blocked:
-            # Even if POS filter blocks a token, try intent/result fallback rules to avoid data loss.
+            # Even if POS filter blocks a token, try richer semantic fallbacks before DO-only fallback.
             goal_ir = _intent_goal_ir(raw_text)
             cause_ir = _gerund_cause_ir(raw_text)
             do_ir = _dynamic_do_ir(raw_text)
-            for cand, label in (
-                (goal_ir, "Intent"),
-                (cause_ir, "Zincirleme"),
-                (do_ir, "Dinamik DO"),
-            ):
-                if cand and cand not in filtered:
+            semantic_ir = semantic_fallback_ir(raw_text, include_do=True)
+            fallback_pack = [cand for cand in (goal_ir, cause_ir, do_ir) if cand]
+            fallback_pack = merge_fallback(fallback_pack, semantic_ir)
+            if not fallback_pack and do_ir:
+                fallback_pack = [do_ir]
+            for cand in fallback_pack:
+                if cand not in filtered:
                     filtered.append(cand)
-                    logs.append(f"[GRAMMAR_FILTER] {label} fallback uygulandi (POS blok sonrasi): {cand}")
+            if fallback_pack:
+                logs.append(f"[GRAMMAR_FILTER] POS blok sonrasi semantik fallback uygulandi, {len(fallback_pack)} bag eklendi.")
             continue
 
         final_op = op
-        # Dynamic opcode mapping: unknown ops are coerced into DO(subject, action).
+        # Unknown opcode fallback: prefer semantic extraction, DO only as a last resort.
         if op not in known_ops:
-            do_ir = _dynamic_do_ir(raw_text)
-            filtered.append(do_ir if do_ir else {"op": "DO", "args": ["agent", "eylem"]})
-            logs.append(f"[GRAMMAR_FILTER] Bilinmeyen opcode '{op}' -> DO fallback uygulandi.")
+            semantic_ir = semantic_fallback_ir(raw_text, include_do=True)
+            if semantic_ir:
+                merged = merge_fallback(filtered, semantic_ir)
+                added = len(merged) - len(filtered)
+                filtered = merged
+                logs.append(f"[GRAMMAR_FILTER] Bilinmeyen opcode '{op}' -> semantik fallback uygulandi ({max(0, added)} yeni bag).")
+            else:
+                do_ir = _dynamic_do_ir(raw_text) or {"op": "DO", "args": ["agent", "eylem"]}
+                if do_ir not in filtered:
+                    filtered.append(do_ir)
+                logs.append(f"[GRAMMAR_FILTER] Bilinmeyen opcode '{op}' -> son care DO fallback uygulandi.")
             continue
 
         if requested_opcode == "GOAL":
@@ -544,13 +556,6 @@ def grammar_filter_ir(
         if cause_ir and cause_ir not in filtered:
             filtered.append(cause_ir)
             logs.append(f"[GRAMMAR_FILTER] Zincirleme neden-sonuc kurali uygulandi: {cause_ir}")
-
-        # Dynamic opcode fallback: no reliable opcode signal -> keep data as temporary DO.
-        if op not in known_ops and requested_opcode is None:
-            do_ir = _dynamic_do_ir(raw_text)
-            if do_ir and do_ir not in filtered:
-                filtered.append(do_ir)
-                logs.append(f"[GRAMMAR_FILTER] Dinamik opcode fallback (DO) uygulandi: {do_ir}")
 
     return filtered, logs, generated_attrs
 

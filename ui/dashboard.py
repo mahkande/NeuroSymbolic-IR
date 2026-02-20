@@ -12,7 +12,13 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from core.listener import get_shadow_listener_status, read_recent_shadow_events, start_shadow_listener
 from core.model_bridge import PROVIDER_SPECS, ensure_provider_client
 from core.rule_guard import approve_candidate, auto_review_candidates, get_review_queue, get_rule_stats, reject_candidate
-from core.quality_metrics import aggregate_opcode_quality, drift_alerts, edge_diversity_metrics, provenance_coverage
+from core.quality_metrics import (
+    aggregate_fallback_kpi,
+    aggregate_opcode_quality,
+    drift_alerts,
+    edge_diversity_metrics,
+    provenance_coverage,
+)
 from core.vscode_chat_bridge import get_vscode_chat_bridge_status, start_vscode_chat_bridge
 from core.memory_manager import MemoryManager
 try:
@@ -56,6 +62,18 @@ except ImportError:
 
 st.set_page_config(layout="wide", page_title="Cognitive OS Dashboard")
 st.title("Cognitive OS - Live Dashboard")
+st.markdown(
+    """
+    <style>
+    .main .block-container {
+        max-width: 100% !important;
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 if "graph" not in st.session_state:
@@ -68,6 +86,10 @@ if "last_ir" not in st.session_state:
     st.session_state["last_ir"] = ""
 if "last_processed_input" not in st.session_state:
     st.session_state["last_processed_input"] = ""
+if "prompt_input" not in st.session_state:
+    st.session_state["prompt_input"] = ""
+if "prompt_upload_nonce" not in st.session_state:
+    st.session_state["prompt_upload_nonce"] = 0
 if "active_terms" not in st.session_state:
     st.session_state["active_terms"] = []
 if "alerts" not in st.session_state:
@@ -111,6 +133,52 @@ def compute_active_region(graph, terms):
             active.update(graph.successors(term))
             active.update(graph.predecessors(term))
     return active
+
+
+def split_text_for_queue(text: str, max_words: int = 1200):
+    raw = (text or "").replace("\r", "\n").strip()
+    if not raw:
+        return []
+    words = raw.split()
+    if len(words) <= max_words:
+        return [raw]
+
+    parts = []
+    for block in raw.split("\n\n"):
+        chunk = block.strip()
+        if chunk:
+            parts.append(chunk)
+
+    out = []
+    buf = []
+    count = 0
+    for part in parts:
+        w = part.split()
+        if count + len(w) > max_words and buf:
+            out.append("\n\n".join(buf).strip())
+            buf = [part]
+            count = len(w)
+        else:
+            buf.append(part)
+            count += len(w)
+    if buf:
+        out.append("\n\n".join(buf).strip())
+    return out
+
+
+def process_prompt_payload(payload_text: str):
+    sync_graph_from_disk()
+    result = run_cognitive_os(payload_text)
+    st.session_state["graph"] = load_global_graph()
+    st.session_state["decision_log"].extend(result["log"])
+    for entry in result["log"]:
+        if "[DASHBOARD_ALERT]" in str(entry):
+            st.session_state["alerts"].append(str(entry))
+    st.session_state["z3_status"] = result["z3_status"]
+    st.session_state["last_processed_input"] = payload_text
+    st.session_state["active_terms"] = extract_terms(payload_text)
+    st.session_state["last_ir"] = json.dumps(result["log"][-1] if result["log"] else "", ensure_ascii=False, indent=2)
+    return result
 
 
 st.sidebar.header("Controls")
@@ -197,23 +265,50 @@ for event in shadow_events:
 sync_graph_from_disk()
 
 
-user_input = st.text_input("Enter a sentence and press Enter:", "")
+st.subheader("Prompt Input")
+queue_word_limit = st.slider("Batch Size (words per queue item)", min_value=300, max_value=3000, value=1200, step=100)
+with st.form("prompt_form", clear_on_submit=False):
+    st.text_area(
+        "Prompt",
+        key="prompt_input",
+        height=130,
+        placeholder="Type a sentence or paste long text...",
+    )
+    uploaded_txt = st.file_uploader(
+        "📎 Upload Text File (.txt, .md)",
+        type=["txt", "md"],
+        key=f"prompt_upload_{st.session_state['prompt_upload_nonce']}",
+    )
+    submit_prompt = st.form_submit_button("Process")
 
-if user_input and user_input != st.session_state["last_processed_input"]:
-    sync_graph_from_disk()
-    result = run_cognitive_os(user_input)
+if submit_prompt:
+    prompt_text = (st.session_state.get("prompt_input") or "").strip()
+    file_text = ""
+    if uploaded_txt is not None:
+        try:
+            file_text = uploaded_txt.read().decode("utf-8", errors="ignore").strip()
+        except Exception:
+            file_text = ""
 
-    # main.py persists to disk; keep disk graph as source of truth.
-    st.session_state["graph"] = load_global_graph()
-
-    st.session_state["decision_log"].extend(result["log"])
-    for entry in result["log"]:
-        if "[DASHBOARD_ALERT]" in str(entry):
-            st.session_state["alerts"].append(str(entry))
-    st.session_state["z3_status"] = result["z3_status"]
-    st.session_state["last_processed_input"] = user_input
-    st.session_state["active_terms"] = extract_terms(user_input)
-    st.session_state["last_ir"] = json.dumps(result["log"][-1] if result["log"] else "", ensure_ascii=False, indent=2)
+    combined_input = "\n\n".join([x for x in [prompt_text, file_text] if x]).strip()
+    if not combined_input:
+        st.warning("Prompt or text file is required.")
+    else:
+        queue_items = split_text_for_queue(combined_input, max_words=queue_word_limit)
+        if not queue_items:
+            st.warning("Input could not be segmented.")
+        else:
+            progress = st.progress(0.0)
+            status = st.empty()
+            total = len(queue_items)
+            for idx, chunk in enumerate(queue_items, start=1):
+                status.info(f"Processing chunk {idx}/{total}...")
+                process_prompt_payload(chunk)
+                progress.progress(float(idx) / float(total))
+            status.success(f"Completed. {total} chunk(s) processed.")
+            st.session_state["prompt_input"] = ""
+            st.session_state["prompt_upload_nonce"] += 1
+            st.rerun()
 
 
 st.sidebar.subheader("Manual IR Editor")
@@ -266,6 +361,15 @@ st.sidebar.write(f"Dominance ratio: {div.get('dominance_ratio', 0.0):.3f}")
 st.sidebar.write(f"CAUSE ratio: {div.get('cause_ratio', 0.0):.3f}")
 st.sidebar.write(f"Provenance coverage: {prov.get('coverage', 0.0):.3f}")
 
+fallback_kpi = aggregate_fallback_kpi()
+st.sidebar.write(f"Fallback rows: {fallback_kpi.get('rows', 0)}")
+st.sidebar.write(f"Fallback useful-edge ratio: {float(fallback_kpi.get('avg_useful_ratio', 0.0)):.3f}")
+fb_ops = fallback_kpi.get("opcode_counts", {}) or {}
+if fb_ops:
+    st.sidebar.write("**Fallback Opcode Dist.:**")
+    for op, cnt in sorted(fb_ops.items(), key=lambda x: x[1], reverse=True)[:6]:
+        st.sidebar.write(f"- {op}: {cnt}")
+
 if alerts:
     st.sidebar.warning("Drift alarms:")
     for a in alerts[:3]:
@@ -302,6 +406,8 @@ if shadow_status.get("last_error"):
 
 st.sidebar.subheader("VSCode Chat Bridge")
 st.sidebar.write("**Status:**", "Running" if vscode_bridge_status.get("running") else "Stopped")
+if not vscode_bridge_status.get("running"):
+    st.sidebar.error("CRITICAL: VSCode Chat Bridge is stopped. Chat messages will not be ingested.")
 st.sidebar.write("**Watched Session Files:**", vscode_bridge_status.get("watched_files", 0))
 st.sidebar.write("**Forwarded User Msg:**", vscode_bridge_status.get("forwarded_user", 0))
 st.sidebar.write("**Forwarded Assistant Msg:**", vscode_bridge_status.get("forwarded_assistant", 0))
@@ -310,17 +416,40 @@ for p in (vscode_bridge_status.get("watched_paths") or [])[:3]:
 if vscode_bridge_status.get("last_error"):
     st.sidebar.warning(vscode_bridge_status.get("last_error"))
 
+intervention_log = Path("memory/interventions.jsonl")
+if intervention_log.exists():
+    try:
+        last_rows = intervention_log.read_text(encoding="utf-8").splitlines()[-20:]
+    except Exception:
+        last_rows = []
+    if last_rows:
+        st.sidebar.subheader("Intervention Layer")
+        st.sidebar.write("**Enabled:**", "Yes" if os.getenv("COGNITIVE_INTERVENTION_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"} else "No")
+        st.sidebar.write("**Recent Interventions:**", len(last_rows))
+        try:
+            tail = json.loads(last_rows[-1])
+            st.sidebar.caption(str(tail.get("message", ""))[:160])
+        except Exception:
+            pass
+
 st.sidebar.subheader("Rule Review")
 st.sidebar.write("**Active Rules:**", rule_stats.get("active_rules", 0))
 st.sidebar.write("**Pending Candidates:**", rule_stats.get("pending_candidates", 0))
+st.sidebar.write("**Need Human Review:**", rule_stats.get("pending_human_review", 0))
 if st.sidebar.button("Auto Review (>=3 hits)"):
     result = auto_review_candidates(CognitiveValidator(), min_hits=3)
     st.sidebar.success(f"Auto review done. approved={result.get('approved', 0)} rejected={result.get('rejected', 0)}")
 if rule_queue:
     for cand in rule_queue[:5]:
         cid = cand.get("id")
-        st.sidebar.write(f"`{cid}` hits={cand.get('hits', 0)} op={cand.get('op')}")
+        conf = cand.get("confidence")
+        conf_txt = f"{float(conf):.2f}" if conf is not None else "-"
+        st.sidebar.write(
+            f"`{cid}` hits={cand.get('hits', 0)} op={cand.get('op')} conf={conf_txt} human={bool(cand.get('require_human'))}"
+        )
         st.sidebar.code(str(cand.get("example_text", ""))[:120])
+        if cand.get("clarification_question"):
+            st.sidebar.caption(f"Q: {cand.get('clarification_question')}")
         c1, c2 = st.sidebar.columns(2)
         if c1.button(f"Approve {cid}", key=f"approve_{cid}"):
             ok = approve_candidate(cid, CognitiveValidator())
@@ -371,7 +500,15 @@ for u, v, data in G.edges(data=True):
 
 if G.number_of_edges() > max_edges:
     st.caption(f"Rendering first {max_edges} edges out of {G.number_of_edges()} for stability.")
-config = Config(width=1000, height=560, directed=True, physics=physics_enabled, hierarchical=False)
+graph_width_px = min(3200, max(1200, int(len(render_nodes) * 4.5)))
+graph_height_px = min(1000, max(560, int(len(render_nodes) * 1.4)))
+config = Config(
+    width=graph_width_px,
+    height=graph_height_px,
+    directed=True,
+    physics=physics_enabled,
+    hierarchical=False,
+)
 agraph(nodes=nodes, edges=edges, config=config)
 
 

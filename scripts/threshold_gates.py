@@ -25,6 +25,8 @@ def main():
     parser.add_argument("--load-report", default="memory/load_test_smoke_report.json")
     parser.add_argument("--ablation-report", default="reports/retriever_ablation_report.json")
     parser.add_argument("--release-report", default="memory/release_check_report.json")
+    parser.add_argument("--evidence-report", default="reports/evidence_recall_report.json")
+    parser.add_argument("--canary-report", default="reports/canary_rollout_report.json")
     parser.add_argument("--out", default="reports/threshold_gate_report.json")
     args = parser.parse_args()
 
@@ -33,6 +35,8 @@ def main():
     load_r = _load_json(args.load_report) or {}
     abl_r = _load_json(args.ablation_report) or {}
     rel_r = _load_json(args.release_report) or {}
+    ev_r = _load_json(args.evidence_report) or {}
+    canary_r = _load_json(args.canary_report) or {}
 
     failed = []
     checks = []
@@ -78,6 +82,52 @@ def main():
     else:
         failed.append("missing_ablation_report")
 
+    # Evidence coverage gates
+    ev_t = thresholds.get("evidence", {})
+    if ev_r:
+        ev_m = ev_r.get("metrics", {}) or {}
+        rec = _f(ev_m.get("recall_at_k"))
+        mrr = _f(ev_m.get("mrr"))
+        min_rec = _f(ev_t.get("min_recall_at_k"), 0.0)
+        min_mrr = _f(ev_t.get("min_mrr"), 0.0)
+        checks.extend(
+            [
+                {"name": "evidence_recall_at_k", "value": rec, "threshold": min_rec, "ok": rec >= min_rec},
+                {"name": "evidence_mrr", "value": mrr, "threshold": min_mrr, "ok": mrr >= min_mrr},
+            ]
+        )
+    elif ev_t:
+        failed.append("missing_evidence_report")
+
+    # Reliability gates: unsupported claim and contradiction rates from canary.
+    rel_t = thresholds.get("reliability", {})
+    if canary_r:
+        summ = ((canary_r.get("canary", {}) or {}).get("summary", {}) or {})
+        unsupported_rate = _f(summ.get("unsupported_claim_rate"))
+        contradiction_rate = _f(summ.get("contradiction_rate"))
+        max_unsup = _f(rel_t.get("max_unsupported_claim_rate"), 1.0)
+        max_contra = _f(rel_t.get("max_contradiction_rate"), 1.0)
+        checks.extend(
+            [
+                {
+                    "name": "unsupported_claim_rate",
+                    "value": unsupported_rate,
+                    "threshold": max_unsup,
+                    "ok": unsupported_rate <= max_unsup,
+                    "direction": "max",
+                },
+                {
+                    "name": "contradiction_rate",
+                    "value": contradiction_rate,
+                    "threshold": max_contra,
+                    "ok": contradiction_rate <= max_contra,
+                    "direction": "max",
+                },
+            ]
+        )
+    elif rel_t:
+        failed.append("missing_canary_report")
+
     failed.extend([c["name"] for c in checks if not c.get("ok")])
     report = {
         "ok": len(failed) == 0,
@@ -89,6 +139,8 @@ def main():
             "load_report": args.load_report,
             "ablation_report": args.ablation_report,
             "release_report": args.release_report,
+            "evidence_report": args.evidence_report,
+            "canary_report": args.canary_report,
         },
     }
     out = Path(args.out)

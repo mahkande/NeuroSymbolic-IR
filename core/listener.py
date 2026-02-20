@@ -11,12 +11,14 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from core.logic_engine import LogicEngine
+from core.fallback_rules import merge_fallback, semantic_fallback_ir
 from core.hybrid_semantics import RuleBasedExtractorV2
 from core.model_bridge import NanbeigeBridge
 from core.nlp_utils import grammar_filter_ir, rebalance_relations
 from core.parser import IRParser
 from core.rule_guard import apply_active_rules, auto_review_candidates, register_unknown_pattern
-from core.rule_learner import propose_candidates_from_text
+from core.rule_learner import propose_candidates_from_text, propose_llm_rule_candidate
+from core.quality_metrics import record_fallback_usage
 from core.validator import CognitiveValidator
 from memory.knowledge_graph import CognitiveMemory
 
@@ -24,7 +26,7 @@ from memory.knowledge_graph import CognitiveMemory
 SHADOW_EVENTS_PATH = Path("memory/shadow_events.jsonl")
 SHADOW_INBOX_PATH = Path("memory/shadow_inbox.txt")
 SHADOW_CONVERSATION_PATH = Path("conversation.txt")
-SHADOW_ALLOW_ASSISTANT = os.getenv("SHADOW_ALLOW_ASSISTANT", "0").strip().lower() in {"1", "true", "yes", "on"}
+SHADOW_ALLOW_ASSISTANT = os.getenv("SHADOW_ALLOW_ASSISTANT", "1").strip().lower() in {"1", "true", "yes", "on"}
 
 SYSTEM_PROMPT = (
     "Sen bir mantik noterisin. Kullanicı ile Code AI arasindaki bu teknik konusmayi izle. "
@@ -291,7 +293,11 @@ class ShadowListenerService:
             self._stats["processed_blocks"] += 1
             try:
                 llm_output = await self._dispatch_to_groq(client, chunk.content)
-                ir_chain = self.parser.parse_raw_output(llm_output)
+                ir_chain = self.parser.parse_raw_output(
+                    llm_output,
+                    allowed_ops=set(self.validator.opcodes.keys()),
+                    strict_schema=True,
+                )
                 used_learned_rule = False
                 used_fallback = False
                 if not isinstance(ir_chain, list):
@@ -302,6 +308,8 @@ class ShadowListenerService:
                         # Fallback: use deterministic extractor when LLM output is not parseable.
                         ir_chain = self._rule_based_ir(chunk.content)
                         used_fallback = bool(ir_chain)
+                        if used_fallback:
+                            record_fallback_usage("shadow_listener", chunk.content, ir_chain, reason="parse_failed")
                     if not ir_chain:
                         register_unknown_pattern(chunk.content, source=chunk.source, reason="parse_failed")
                         self._append_event(
@@ -323,6 +331,8 @@ class ShadowListenerService:
                     if not clean_ir:
                         clean_ir = self._rule_based_ir(chunk.content)
                         used_fallback = bool(clean_ir)
+                        if used_fallback:
+                            record_fallback_usage("shadow_listener", chunk.content, clean_ir, reason="sanitize_empty")
                 if not clean_ir:
                     register_unknown_pattern(chunk.content, source=chunk.source, reason="empty_ir")
                     self._append_event(
@@ -343,7 +353,65 @@ class ShadowListenerService:
                 clean_ir = self._sanitize_ir(clean_ir)
                 if not clean_ir:
                     register_unknown_pattern(chunk.content, source=chunk.source, reason="empty_ir_after_filter")
+                    proposal = propose_llm_rule_candidate(
+                        chunk.content,
+                        self.validator,
+                        provider="groq",
+                        model_name=self.model,
+                        api_key=self.api_key,
+                        source="listener_llm_rule_bootstrap",
+                    )
+                    if proposal:
+                        cand = proposal.get("candidate") or {}
+                        q = str(proposal.get("question", "")).strip()
+                        conf = float(proposal.get("confidence", 0.0) or 0.0)
+                        msg = f"LLM rule adayi olusturuldu id={cand.get('id', 'n/a')} conf={conf:.2f}"
+                        if q:
+                            msg += f" | soru: {q}"
+                        self._append_event(
+                            {
+                                "type": "rule_bootstrap",
+                                "level": "info",
+                                "source": chunk.source,
+                                "text": chunk.content[:500],
+                                "message": msg[:500],
+                            }
+                        )
                     continue
+
+                if self._is_do_only(clean_ir):
+                    register_unknown_pattern(chunk.content, source=chunk.source, reason="do_only_fallback")
+                    proposal = propose_llm_rule_candidate(
+                        chunk.content,
+                        self.validator,
+                        provider="groq",
+                        model_name=self.model,
+                        api_key=self.api_key,
+                        source="listener_llm_rule_bootstrap",
+                    )
+                    if proposal:
+                        cand = proposal.get("candidate") or {}
+                        q = str(proposal.get("question", "")).strip()
+                        conf = float(proposal.get("confidence", 0.0) or 0.0)
+                        cid = cand.get("id", "n/a")
+                        msg = f"LLM rule adayi olusturuldu id={cid} conf={conf:.2f}"
+                        if q:
+                            msg += f" | soru: {q}"
+                        self._append_event(
+                            {
+                                "type": "rule_bootstrap",
+                                "level": "info",
+                                "source": chunk.source,
+                                "text": chunk.content[:500],
+                                "message": msg[:500],
+                            }
+                        )
+                        if proposal.get("auto_apply"):
+                            cand_ir = self._sanitize_ir(proposal.get("ir", []))
+                            if cand_ir and not self._is_do_only(cand_ir):
+                                clean_ir = cand_ir
+                                used_fallback = True
+                                record_fallback_usage("shadow_listener", chunk.content, clean_ir, reason="do_only_bootstrap")
                 if gf_logs or rb_logs:
                     self._append_event(
                         {
@@ -418,7 +486,17 @@ class ShadowListenerService:
 
     def _rule_based_ir(self, text: str) -> List[dict]:
         extractor = RuleBasedExtractorV2()
-        return self._sanitize_ir(extractor.extract_ir(text))
+        rule_ir = extractor.extract_ir(text)
+        semantic_ir = semantic_fallback_ir(text, include_do=True)
+        merged = merge_fallback(rule_ir, semantic_ir)
+        return self._sanitize_ir(merged)
+
+    @staticmethod
+    def _is_do_only(ir_chain: List[dict]) -> bool:
+        rows = [r for r in (ir_chain or []) if isinstance(r, dict)]
+        if not rows:
+            return False
+        return all(str(r.get("op", "")).upper() == "DO" for r in rows)
 
     @staticmethod
     def _graph_to_ir(graph, known_ops: Dict[str, dict]) -> List[dict]:

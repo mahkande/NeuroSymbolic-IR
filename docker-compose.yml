@@ -1,0 +1,40 @@
+services:
+  neo4j:
+    image: neo4j:5.26
+    container_name: cognitive_os_neo4j
+    restart: unless-stopped
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      NEO4J_AUTH: neo4j/neo4j_password
+      NEO4J_PLUGINS: '["apoc"]'
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cognitive_os_dashboard
+    restart: unless-stopped
+    depends_on:
+      - neo4j
+    ports:
+      - "8501:8501"
+    environment:
+      COGNITIVE_GRAPH_BACKEND: neo4j
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: neo4j_password
+      NEO4J_DATABASE: neo4j
+      COGNITIVE_VECTOR_BACKEND: local
+      COGNITIVE_VECTOR_LOCAL_PATH: memory/vector_index.jsonl
+      COGNITIVE_BRIDGE_AUTOSTART: "1"
+    volumes:
+      - ./:/app
+
+volumes:
+  neo4j_data:
+  neo4j_logs:

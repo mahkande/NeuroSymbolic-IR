@@ -1,5 +1,6 @@
 import hashlib
 import math
+import os
 import re
 from typing import List, Tuple
 
@@ -21,6 +22,54 @@ def hash_embed(text: str, dim: int = 128) -> List[float]:
     return [v / norm for v in vec]
 
 
+def _fit_dim(vec: List[float], dim: int) -> List[float]:
+    dim = max(16, int(dim))
+    if not vec:
+        return [0.0] * dim
+    if len(vec) == dim:
+        return [float(v) for v in vec]
+    out = [0.0] * dim
+    for i, v in enumerate(vec):
+        out[i % dim] += float(v)
+    norm = math.sqrt(sum(x * x for x in out))
+    if norm <= 1e-12:
+        return out
+    return [x / norm for x in out]
+
+
+_JINA_EMBEDDER = None
+_JINA_EMBEDDER_ERROR = ""
+
+
+def _load_jina_embedder():
+    global _JINA_EMBEDDER, _JINA_EMBEDDER_ERROR
+    if _JINA_EMBEDDER is not None:
+        return _JINA_EMBEDDER
+    if _JINA_EMBEDDER_ERROR:
+        return None
+    model_name = os.getenv("COGNITIVE_JINA_EMBED_MODEL", "jinaai/jina-embeddings-v3").strip()
+    try:
+        from sentence_transformers import SentenceTransformer
+
+        _JINA_EMBEDDER = SentenceTransformer(model_name)
+    except Exception as exc:
+        _JINA_EMBEDDER_ERROR = str(exc)
+    return _JINA_EMBEDDER
+
+
+def embed_text(text: str, dim: int = 128) -> List[float]:
+    provider = os.getenv("COGNITIVE_EMBED_PROVIDER", "jina").strip().lower()
+    if provider == "jina":
+        model = _load_jina_embedder()
+        if model is not None:
+            try:
+                raw = model.encode(text or "", convert_to_numpy=True, normalize_embeddings=True)
+                return _fit_dim(raw.tolist() if hasattr(raw, "tolist") else list(raw), dim)
+            except Exception:
+                pass
+    return hash_embed(text, dim=dim)
+
+
 class GraphEmbeddingPipeline:
     def __init__(self, vector_store, dim: int = 128):
         self.store = vector_store
@@ -37,7 +86,7 @@ class GraphEmbeddingPipeline:
         rows = []
         for n, attrs in graph.nodes(data=True):
             txt = f"node {n} type {attrs.get('type', '')} label {attrs.get('label', '')}".strip()
-            rows.append({"id": f"node::{n}", "text": txt, "vector": hash_embed(txt, self.dim), "meta": {"kind": "node", "node": n}})
+            rows.append({"id": f"node::{n}", "text": txt, "vector": embed_text(txt, self.dim), "meta": {"kind": "node", "node": n}})
         return rows
 
     def _edge_rows(self, graph):
@@ -50,7 +99,7 @@ class GraphEmbeddingPipeline:
                     {
                         "id": f"edge::{u}::{rel}::{v}::{k}",
                         "text": txt,
-                        "vector": hash_embed(txt, self.dim),
+                        "vector": embed_text(txt, self.dim),
                         "meta": {"kind": "edge", "u": u, "v": v, "relation": rel},
                     }
                 )
@@ -62,7 +111,7 @@ class GraphEmbeddingPipeline:
                     {
                         "id": f"edge::{u}::{rel}::{v}",
                         "text": txt,
-                        "vector": hash_embed(txt, self.dim),
+                        "vector": embed_text(txt, self.dim),
                         "meta": {"kind": "edge", "u": u, "v": v, "relation": rel},
                     }
                 )
@@ -79,7 +128,7 @@ class GraphEmbeddingPipeline:
                 {
                     "id": f"subgraph::{focus}::{n}",
                     "text": txt,
-                    "vector": hash_embed(txt, self.dim),
+                    "vector": embed_text(txt, self.dim),
                     "meta": {"kind": "subgraph", "focus": focus, "neighbor": n},
                 }
             )

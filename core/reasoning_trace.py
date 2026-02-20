@@ -142,3 +142,25 @@ class ReasoningTraceStore:
             self._append_unique(rec)
             written += 1
         return written
+
+    def record_claim_proofs(self, root: str, proofs, max_records: int = 128):
+        root = str(root or "").strip()
+        if not root or not proofs:
+            return 0
+        written = 0
+        for p in (proofs or [])[:max_records]:
+            if not isinstance(p, dict):
+                continue
+            claim = p.get("claim", {}) or {}
+            rec = {
+                "direction": "claim_proof",
+                "root": root,
+                "claim_id": p.get("claim_id"),
+                "claim_op": claim.get("op"),
+                "claim_args": claim.get("args", []),
+                "verdict": p.get("verdict"),
+                "supports": p.get("supports", []),
+            }
+            self._append_unique(rec)
+            written += 1
+        return written

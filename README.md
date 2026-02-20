@@ -1,38 +1,40 @@
-# NeuroGraph OS
+﻿# NeuroGraph OS
 
-Deterministic IR + Graph tabanli bilissel isletim sistemi. Metni ISA uyumlu IR'e cevirir, graph hafizaya yazar, mantik/verifier katmanlarindan gecirir ve dashboard uzerinden izlenebilir hale getirir.
+A deterministic IR + Graph cognitive operating layer. It compiles natural language into ISA-compliant IR, writes it into persistent graph memory, validates it with logic/verifier gates, and exposes full runtime observability in the dashboard.
 
-## Clone ve Kurulum
-1. Repoyu klonlayin:
+This project is designed to go beyond the classic `prompt -> source code -> token prediction` pipeline by connecting human intent to a machine-near semantic representation (LLVM-IR-like ISA). Instead of a black-box response generator, it provides a controllable reasoning system with deterministic verification, contradiction management, inverse/abductive reasoning, measurable quality metrics, and production safeguards (release gates, threshold checks, canary rollback). Use it when you need traceable, auditable, and operationally reliable reasoning flows in real systems.
+
+## Clone and Setup
+1. Clone the repository:
 ```bash
 git clone https://github.com/mahkande/NeuroSymbolic-IR.git
 cd NeuroSymbolic-IR
 ```
-2. Python 3.11+ hazirlayin.
-3. Sanal ortam olusturun ve aktif edin:
+2. Prepare Python 3.11+.
+3. Create and activate a virtual environment:
 ```bash
 python -m venv .venv
 # Windows PowerShell
 .venv\Scripts\Activate.ps1
 ```
-4. Temel paketleri kurun:
+4. Install core dependencies:
 ```bash
 pip install -U pip
 pip install networkx streamlit streamlit-agraph watchdog z3-solver zeyrek nltk neo4j
 ```
-Not: API istemci paketleri (groq, openai, anthropic, google-generativeai, mistralai, together) dashboarddan provider secince arka planda otomatik kurulabilir.
+Note: API client packages (`groq`, `openai`, `anthropic`, `google-generativeai`, `mistralai`, `together`) can be auto-installed from the dashboard when a provider is selected.
 
-## Dashboard'a Ulasim
-Dashboard'i baslatin:
+## Access the Dashboard
+Run:
 ```bash
 streamlit run ui/dashboard.py
 ```
-Ardindan tarayicida Streamlit adresine gidin (genelde `http://localhost:8501`).
+Then open Streamlit in your browser (usually `http://localhost:8501`).
 
-## LLM Provider Secimi (Dashboard)
-Sidebar'da `LLM Provider` menusu vardir.
+## LLM Provider Selection (Dashboard)
+The sidebar includes an `LLM Provider` menu.
 
-Desteklenen secenekler:
+Supported providers:
 - `Local (Ollama)`
 - `Groq`
 - `OpenAI`
@@ -41,16 +43,16 @@ Desteklenen secenekler:
 - `Mistral`
 - `Together`
 
-Davranis:
-- `Local` secilirse API key gerekmez, Ollama endpointi kullanilir (`OLLAMA_URL`, varsayilan `http://localhost:11434`).
-- API provider secilirse:
-  - API key alani acilir.
-  - Model adi girilebilir.
-  - Gerekli istemci paketi otomatik kurulabilir.
+Behavior:
+- If `Local` is selected, no API key is required (uses Ollama endpoint via `OLLAMA_URL`, default `http://localhost:11434`).
+- If an API provider is selected:
+  - API key input is shown.
+  - Model name can be configured.
+  - Required client package can be installed automatically.
 
-## Backend Ayarlari
+## Backend Configuration
 ### Graph Backend
-Neo4j onerilir:
+Neo4j is recommended:
 ```bash
 docker compose -f docker-compose.neo4j.yml up -d
 set COGNITIVE_GRAPH_BACKEND=neo4j
@@ -59,7 +61,7 @@ set NEO4J_USER=neo4j
 set NEO4J_PASSWORD=neo4j_password
 set NEO4J_DATABASE=neo4j
 ```
-Neo4j yoksa:
+If Neo4j is unavailable:
 ```bash
 set COGNITIVE_GRAPH_BACKEND=json
 ```
@@ -72,41 +74,41 @@ set QDRANT_URL=http://localhost:6333
 set COGNITIVE_VECTOR_COLLECTION=cognitive_graph
 set COGNITIVE_EMBED_DIM=128
 ```
-Fallback local:
+Local fallback:
 ```bash
 set COGNITIVE_VECTOR_BACKEND=local
 set COGNITIVE_VECTOR_LOCAL_PATH=memory/vector_index.jsonl
 ```
 
-## Calistirma (CLI)
+## Run via CLI
 ```bash
 python main.py
 ```
 
-## Latest Updates (TASKS Faz 7)
-Faz 7 tamamlandi:
-- Adim 1: Inference noise kontrolu
+## Latest Updates (TASKS Phase 7)
+Phase 7 is completed:
+- Step 1: Inference noise control
   - Transitive guard
   - Low-value pruning
   - Confidence policy
-- Adim 2: Gold dataset ve gercek degerlendirme
+- Step 2: Gold dataset and real evaluation
   - Gold set v1
   - Eval pipeline (precision/recall/F1)
   - Regression suite
-- Adim 3: Verifier gate sertlestirme
+- Step 3: Verifier gate hardening
   - Strict gate mode
   - Conflict risk score
   - Policy profiles (`safe`, `balanced`, `aggressive`)
-- Adim 4: Retriever ablation ve etki analizi
+- Step 4: Retriever ablation and impact analysis
   - `vector-only`, `graph-only`, `hybrid` ablation runner
-  - KPI raporu (kalite + latency + token maliyeti)
-  - Default retrieval strategy secimi
-- Adim 5: CI/CD release gate
+  - KPI report (quality + latency + token cost)
+  - Default retrieval strategy selection
+- Step 5: CI/CD release gate
   - CI workflow: `compile + release_check + load_test_smoke + eval_pipeline`
-  - Threshold gate (quality/latency esikleri)
-  - Canary rollout + otomatik rollback karari
+  - Threshold gate (quality/latency cutoffs)
+  - Canary rollout with automatic rollback decision
 
-## Faydalı Scriptler
+## Useful Scripts
 - `python scripts/release_check.py`
 - `python scripts/load_test.py --requests 24 --workers 6 --listener-blocks 20`
 - `python scripts/eval_pipeline.py --dataset data/gold/gold_set_v1.jsonl --output reports/eval_report_latest.json`
@@ -114,13 +116,13 @@ Faz 7 tamamlandi:
 - `python scripts/threshold_gates.py --thresholds spec/release_thresholds.json`
 - `python scripts/canary_rollout.py --policy spec/canary_policy.json`
 
-## Proje Dosyalari (Ozet)
-- `main.py`: ana pipeline
+## Project Structure (Summary)
+- `main.py`: main pipeline
 - `ui/dashboard.py`: dashboard
 - `core/model_bridge.py`: local/API provider bridge
 - `core/deterministic_verifier.py`: verifier gate
-- `core/inference_engine.py`: inference + noise kontrol
+- `core/inference_engine.py`: inference + noise controls
 - `memory/graph_store.py`: graph persistence
 - `memory/vector_store.py`: vector persistence
 
-Detayli gorev takibi: `TASKS.md`
+Detailed task tracking: `TASKS.md`

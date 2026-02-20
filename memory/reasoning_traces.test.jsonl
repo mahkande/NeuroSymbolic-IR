@@ -1,3 +1,0 @@
-{"id": "695dd989168fc3157109e5c2dabf3fda78bf35b9", "ts": "2026-02-19T21:47:25.315097+00:00", "direction": "forward", "root": "a", "path_nodes": ["a", "b"], "path_relations": ["CAUSE"]}
-{"id": "d8e2aec41d35a71f537be49348c98a6a4e930d2e", "ts": "2026-02-19T21:47:25.315610+00:00", "direction": "forward", "root": "a", "path_nodes": ["a", "b", "c"], "path_relations": ["CAUSE", "GOAL"]}
-{"id": "a970bc6ff40de683f98938cb5d909b9bf8a3b65f", "ts": "2026-02-19T21:47:25.315805+00:00", "direction": "inverse", "target": "c", "cause": "a", "support": "CAUSE", "mode": "direct", "score": 1.0, "path_nodes": ["a", "b", "c"]}

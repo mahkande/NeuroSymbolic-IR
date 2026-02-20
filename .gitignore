@@ -40,6 +40,11 @@ memory/vscode_bridge_events.jsonl
 memory/rule_unknown_buffer.jsonl
 memory/rule_decisions.jsonl
 memory/rule_candidates.json
+memory/load_test_report.json
+memory/backfill_report.json
+memory/release_check_report.json
+memory/loadtest_conversation.txt
+memory/loadtest_processed_logs.jsonl
 
 # Logs
 *.log

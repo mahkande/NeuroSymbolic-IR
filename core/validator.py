@@ -1,9 +1,11 @@
 import json
 import os
+from core.isa_versioning import get_active_isa_path, get_active_version
 
 class CognitiveValidator:
-    def __init__(self, isa_path="spec/isa_v1.json"):
-        self.isa_path = isa_path
+    def __init__(self, isa_path=None):
+        self.isa_path = isa_path or get_active_isa_path()
+        self.isa_version = get_active_version()
         self.isa = self.load_isa()
         self.opcodes = self.flatten_opcodes()
 
@@ -11,7 +13,7 @@ class CognitiveValidator:
         """JSON dosyasını yükler."""
         if not os.path.exists(self.isa_path):
             raise FileNotFoundError(f"Hata: {self.isa_path} bulunamadı!")
-        with open(self.isa_path, 'r', encoding='utf-8') as f:
+        with open(self.isa_path, 'r', encoding='utf-8-sig') as f:
             return json.load(f)
 
     def flatten_opcodes(self):

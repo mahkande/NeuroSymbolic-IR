@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from core.logic_engine import LogicEngine
+from core.hybrid_semantics import RuleBasedExtractorV2
 from core.model_bridge import NanbeigeBridge
 from core.nlp_utils import grammar_filter_ir, rebalance_relations
 from core.parser import IRParser
@@ -416,97 +417,8 @@ class ShadowListenerService:
         return token
 
     def _rule_based_ir(self, text: str) -> List[dict]:
-        raw = (text or "").strip()
-        if not raw:
-            return []
-
-        lowered = raw.lower()
-        out = []
-
-        # Causal pattern: "X artarsa Y düşer/azalir/bozulur"
-        m = re.search(
-            r"(.+?)\s+artarsa\s+(.+?)\s+(duser|düşer|azalir|azalır|bozulur|yavaslar|yavaşlar)",
-            lowered,
-        )
-        if m:
-            cause = self._norm_token(m.group(1) + " artisi")
-            effect = self._norm_token(m.group(2) + " dususu")
-            if cause and effect:
-                out.append({"op": "CAUSE", "args": [cause, effect]})
-
-        # Ontology pattern: "X bir Y'dir"
-        m2 = re.search(r"(.+?)\s+bir\s+(.+?)(dir|dır|dur|dür|tir|tır|tur|tür)\b", lowered)
-        if m2:
-            child = self._norm_token(m2.group(1))
-            parent = self._norm_token(m2.group(2))
-            if child and parent:
-                out.append({"op": "ISA", "args": [child, parent]})
-
-        # Attribute pattern: "X Y'dir"
-        m_attr = re.search(r"(.+?)\s+(.+?)(dir|dır|dur|dür|tir|tır|tur|tür)\b", lowered)
-        if m_attr and " bir " not in lowered:
-            subject = self._norm_token(m_attr.group(1))
-            value = self._norm_token(m_attr.group(2))
-            if subject and value:
-                out.append({"op": "ATTR", "args": [subject, "ozellik", value]})
-
-        # Desire pattern: "X ... istiyor/istedi"
-        m_want = re.search(r"(.+?)\s+(.+?)\s+ist(iyor|edi|er)\b", lowered)
-        if m_want:
-            subject = self._norm_token(m_want.group(1))
-            state = self._norm_token(m_want.group(2))
-            if subject and state:
-                out.append({"op": "WANT", "args": [subject, state]})
-
-        # Belief pattern: "X Y'ye inanıyor"
-        m_bel = re.search(r"(.+?)\s+(.+?)\s+inan(iyor|ıyordu|di|dı|ir)\b", lowered)
-        if m_bel:
-            subject = self._norm_token(m_bel.group(1))
-            fact = self._norm_token(m_bel.group(2))
-            if subject and fact:
-                out.append({"op": "BELIEVE", "args": [subject, fact, "0.7"]})
-
-        # Goal pattern: "... icin ..."
-        m_goal = re.search(r"(.+?)\s+icin\s+(.+)", lowered)
-        if m_goal:
-            state = self._norm_token(m_goal.group(1))
-            subject = self._norm_token(m_goal.group(2))
-            if subject and state:
-                out.append({"op": "GOAL", "args": [subject, state, "medium"]})
-
-        # Temporal pattern: "once ... sonra ..."
-        m_before = re.search(r"once\s+(.+?)\s+sonra\s+(.+)", lowered)
-        if m_before:
-            event_a = self._norm_token(m_before.group(1))
-            event_b = self._norm_token(m_before.group(2))
-            if event_a and event_b:
-                out.append({"op": "BEFORE", "args": [event_a, event_b]})
-
-        # Opposition pattern
-        m_opp = re.search(r"(.+?)\s+(ama|fakat|ancak)\s+(.+)", lowered)
-        if m_opp:
-            left = self._norm_token(m_opp.group(1))
-            right = self._norm_token(m_opp.group(3))
-            if left and right:
-                out.append({"op": "OPPOSE", "args": [left, right]})
-
-        # Evaluation pattern
-        m_eval = re.search(r"(.+?)\s+(iyi|kotu|guzel|cirkin)\b", lowered)
-        if m_eval:
-            obj = self._norm_token(m_eval.group(1))
-            score = "1.0" if m_eval.group(2) in {"iyi", "guzel"} else "-1.0"
-            if obj:
-                out.append({"op": "EVAL", "args": [obj, score]})
-
-        # Explicit conditional causal fallback: "X olursa/ise Y olur"
-        m3 = re.search(r"(.+?)\s+(olursa|ise)\s+(.+?)\s+olur", lowered)
-        if m3:
-            cause = self._norm_token(m3.group(1))
-            effect = self._norm_token(m3.group(3))
-            if cause and effect:
-                out.append({"op": "CAUSE", "args": [cause, effect]})
-
-        return self._sanitize_ir(out)
+        extractor = RuleBasedExtractorV2()
+        return self._sanitize_ir(extractor.extract_ir(text))
 
     @staticmethod
     def _graph_to_ir(graph, known_ops: Dict[str, dict]) -> List[dict]:

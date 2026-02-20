@@ -1,0 +1,10 @@
+{
+  "updated_at": "2026-02-20T10:55:44.808120+00:00",
+  "default_mode": "hybrid",
+  "candidates": [
+    "vector-only",
+    "graph-only",
+    "hybrid"
+  ],
+  "source_report": "reports/retriever_ablation_report.json"
+}

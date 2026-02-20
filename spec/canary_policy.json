@@ -1,0 +1,6 @@
+{
+  "traffic_percent": 5,
+  "max_error_rate": 0.15,
+  "max_p95_latency_ms": 6000,
+  "min_pass_rate": 0.85
+}

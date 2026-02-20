@@ -1,114 +1,155 @@
-from pathlib import Path
-import json
+import os
 import re
 import threading
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 
 import networkx as nx
-from networkx.readwrite import json_graph
 
 from core.inference_engine import InferenceEngine
+from core.deterministic_verifier import DeterministicVerifierGate
+from core.embedding_pipeline import GraphEmbeddingPipeline
+from core.hybrid_semantics import RelationClassifier, RuleBasedExtractorV2, fuse_relations
+from core.hybrid_retriever import HybridRetriever
 from core.logic_engine import LogicEngine
 from core.memory_manager import MemoryManager
 from core.model_bridge import NanbeigeBridge
 from core.nlp_utils import grammar_filter_ir, rebalance_relations
 from core.parser import IRParser
+from core.quality_metrics import drift_alerts, record_opcode_quality
+from core.reasoning_trace import ReasoningTraceStore
+from core.rule_engine import DeterministicRuleEngine
+from core.truth_maintenance import TruthMaintenanceEngine
 from core.validator import CognitiveValidator
 from memory.conceptnet_service import ConceptNetService
+from memory.graph_store import GraphStore
 from memory.knowledge_graph import CognitiveMemory
+from memory.vector_store import VectorStore
 
 
-GLOBAL_GRAPH_PATH = Path(__file__).resolve().parent / "memory" / "global_graph.json"
-GLOBAL_GRAPH_BACKUP_PATH = Path(__file__).resolve().parent / "memory" / "global_graph.backup.json"
 _GRAPH_IO_LOCK = threading.Lock()
+_GRAPH_STORE = GraphStore()
+_VECTOR_STORE = VectorStore(dim=int(os.getenv("COGNITIVE_EMBED_DIM", "128")))
+_VOLATILE_EDGE_KEYS = {"_ekey", "created_at", "updated_at", "ts", "timestamp"}
+
+
+def _stable_value(val):
+    if isinstance(val, dict):
+        return tuple(sorted((str(k), _stable_value(v)) for k, v in val.items()))
+    if isinstance(val, (list, tuple, set)):
+        return tuple(_stable_value(v) for v in val)
+    return val
+
+
+def _edge_signature(u, v, attrs):
+    clean = {}
+    for k, v_ in (attrs or {}).items():
+        if k in _VOLATILE_EDGE_KEYS:
+            continue
+        clean[str(k)] = _stable_value(v_)
+    return str(u), str(v), tuple(sorted(clean.items()))
+
+
+def _ensure_edge_provenance(graph):
+    now = datetime.now(timezone.utc).isoformat()
+    if isinstance(graph, nx.MultiDiGraph):
+        for u, v, k, attrs in graph.edges(data=True, keys=True):
+            edge = graph[u][v][k]
+            edge.setdefault("source", "runtime")
+            edge.setdefault("created_at", now)
+            edge.setdefault("confidence", 0.5)
+            if "inference_rule" not in edge:
+                edge["inference_rule"] = "LEGACY_BACKFILL" if edge.get("inferred") else "DIRECT_INPUT"
+    else:
+        for u, v, attrs in graph.edges(data=True):
+            edge = graph[u][v]
+            edge.setdefault("source", "runtime")
+            edge.setdefault("created_at", now)
+            edge.setdefault("confidence", 0.5)
+            if "inference_rule" not in edge:
+                edge["inference_rule"] = "LEGACY_BACKFILL" if edge.get("inferred") else "DIRECT_INPUT"
 
 
 def _merge_graphs(target, source):
     for node, attrs in source.nodes(data=True):
         target.add_node(node, **attrs)
     if isinstance(target, nx.MultiDiGraph):
+        seen = set()
+        for u, v, prev_attrs in target.edges(data=True):
+            seen.add(_edge_signature(u, v, prev_attrs))
         for u, v, attrs in source.edges(data=True):
-            exists = False
-            if target.has_edge(u, v):
-                edge_map = target.get_edge_data(u, v) or {}
-                for _, prev_attrs in edge_map.items():
-                    if prev_attrs == attrs:
-                        exists = True
-                        break
-            if not exists:
+            sig = _edge_signature(u, v, attrs)
+            if sig not in seen:
                 target.add_edge(u, v, **attrs)
+                seen.add(sig)
     else:
         for u, v, attrs in source.edges(data=True):
             target.add_edge(u, v, **attrs)
 
 
-def load_global_graph(path=GLOBAL_GRAPH_PATH):
-    path = Path(path)
-    backup_path = GLOBAL_GRAPH_BACKUP_PATH if path == GLOBAL_GRAPH_PATH else Path(str(path) + ".backup")
-
-    def _read_graph(p):
-        with open(p, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        g = json_graph.node_link_graph(
-            data,
-            directed=bool(data.get("directed", True)),
-            multigraph=bool(data.get("multigraph", True)),
-        )
-        if isinstance(g, nx.MultiDiGraph):
-            return g
-        mg = nx.MultiDiGraph()
-        for node, attrs in g.nodes(data=True):
-            mg.add_node(node, **attrs)
-        for u, v, attrs in g.edges(data=True):
-            mg.add_edge(u, v, **attrs)
-        return mg
-
-    if not path.exists() and not backup_path.exists():
-        return nx.MultiDiGraph()
-
-    for candidate in [path, backup_path]:
-        if not candidate.exists():
-            continue
-        try:
-            return _read_graph(candidate)
-        except Exception:
-            continue
-    return nx.MultiDiGraph()
+def load_global_graph(path=None):
+    graph = _GRAPH_STORE.load_graph(path=path)
+    if isinstance(graph, nx.MultiDiGraph):
+        return graph
+    mg = nx.MultiDiGraph()
+    for node, attrs in graph.nodes(data=True):
+        mg.add_node(node, **attrs)
+    for u, v, attrs in graph.edges(data=True):
+        mg.add_edge(u, v, **attrs)
+    return mg
 
 
-def save_global_graph(graph, path=GLOBAL_GRAPH_PATH, merge_existing=True):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    backup_path = GLOBAL_GRAPH_BACKUP_PATH if path == GLOBAL_GRAPH_PATH else Path(str(path) + ".backup")
-
+def save_global_graph(graph, path=None, merge_existing=True):
     with _GRAPH_IO_LOCK:
         to_save = graph.copy()
-        if merge_existing and path.exists():
+        if merge_existing:
             existing = load_global_graph(path)
             _merge_graphs(existing, to_save)
             to_save = existing
-
-        data = json_graph.node_link_data(to_save)
-        tmp_path = path.with_suffix(path.suffix + ".tmp")
-
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-
-        if path.exists():
-            try:
-                path.replace(backup_path)
-            except Exception:
-                pass
-        tmp_path.replace(path)
+        _ensure_edge_provenance(to_save)
+        _GRAPH_STORE.save_graph(to_save, path=path)
 
 
-def clear_global_graph(path=GLOBAL_GRAPH_PATH):
-    path = Path(path)
-    if path.exists():
-        path.unlink()
-    backup_path = GLOBAL_GRAPH_BACKUP_PATH if path == GLOBAL_GRAPH_PATH else Path(str(path) + ".backup")
-    if backup_path.exists():
-        backup_path.unlink()
+def clear_global_graph(path=None):
+    with _GRAPH_IO_LOCK:
+        _GRAPH_STORE.clear_graph(path=path)
+
+
+def get_graph_backend():
+    return _GRAPH_STORE.backend_name()
+
+
+def get_graph_backend_status():
+    return _GRAPH_STORE.backend_status()
+
+
+def get_vector_backend():
+    return _VECTOR_STORE.backend_name()
+
+
+def get_vector_backend_status():
+    return _VECTOR_STORE.backend_status()
+
+
+def get_default_retrieval_mode():
+    env_mode = os.getenv("COGNITIVE_RETRIEVAL_MODE", "").strip().lower()
+    valid = {"vector-only", "graph-only", "hybrid"}
+    if env_mode in valid:
+        return env_mode
+
+    strategy_path = Path("spec/retrieval_strategy.json")
+    if strategy_path.exists():
+        try:
+            import json
+
+            payload = json.loads(strategy_path.read_text(encoding="utf-8-sig"))
+            file_mode = str(payload.get("default_mode", "")).strip().lower()
+            if file_mode in valid:
+                return file_mode
+        except Exception:
+            pass
+    return "hybrid"
 
 
 def update_global_graph(ir_chain, base_graph=None):
@@ -122,6 +163,25 @@ def update_global_graph(ir_chain, base_graph=None):
     return graph
 
 
+def compact_global_graph(path=None):
+    with _GRAPH_IO_LOCK:
+        graph = load_global_graph(path=path)
+        compacted = nx.MultiDiGraph()
+        for node, attrs in graph.nodes(data=True):
+            compacted.add_node(node, **attrs)
+
+        seen = set()
+        for u, v, attrs in graph.edges(data=True):
+            sig = _edge_signature(u, v, attrs)
+            if sig in seen:
+                continue
+            seen.add(sig)
+            compacted.add_edge(u, v, **attrs)
+
+        _GRAPH_STORE.save_graph(compacted, path=path)
+        return graph.number_of_edges(), compacted.number_of_edges()
+
+
 def run_cognitive_os(user_input):
     parser = IRParser()
     validator = CognitiveValidator()
@@ -132,6 +192,22 @@ def run_cognitive_os(user_input):
     bridge = NanbeigeBridge()
     conceptnet = ConceptNetService(language="tr")
     inference = InferenceEngine(memory.graph)
+    verifier_profile = os.getenv("COGNITIVE_VERIFIER_PROFILE", "balanced").strip().lower()
+    verifier_strict = os.getenv("COGNITIVE_VERIFIER_STRICT", "0").strip().lower() in {"1", "true", "yes", "on"}
+    verifier = DeterministicVerifierGate(
+        validator,
+        z3_engine,
+        profile=verifier_profile,
+        strict_mode=verifier_strict,
+    )
+    embed_pipeline = GraphEmbeddingPipeline(_VECTOR_STORE, dim=_VECTOR_STORE.dim)
+    retriever = HybridRetriever(memory.graph, _VECTOR_STORE, dim=_VECTOR_STORE.dim)
+    retrieval_mode = get_default_retrieval_mode()
+    trace_store = ReasoningTraceStore()
+    rule_engine = DeterministicRuleEngine(memory.graph)
+    truth_maintenance = TruthMaintenanceEngine(memory.graph)
+    rb_v2 = RuleBasedExtractorV2()
+    classifier = RelationClassifier()
     cache = MemoryManager()
 
     logs = []
@@ -186,8 +262,10 @@ def run_cognitive_os(user_input):
         logs.append(f"HINT: {', '.join(hints)}")
 
     cached_ir = cache.get_ir(user_input)
+    base_predicted_ops = []
     if cached_ir:
         ir_chain = cached_ir
+        base_predicted_ops = [str(i.get("op", "")) for i in (ir_chain or []) if isinstance(i, dict)]
         logs.append("[CACHE] IR cache'den yuklendi.")
     else:
         ir_chain = []
@@ -214,6 +292,35 @@ def run_cognitive_os(user_input):
 
         if not ir_chain:
             return finalize("Hata")
+        base_predicted_ops = [str(i.get("op", "")) for i in (ir_chain or []) if isinstance(i, dict)]
+
+    # Faz 3 hibrit semantik katmani: rule-v2 + classifier + belirsizlikte LLM hakemligi.
+    rule_candidates = rb_v2.extract(user_input)
+    base_predicted_ops.extend(str(c.get("op", "")) for c in rule_candidates if isinstance(c, dict))
+    cls_probs = classifier.predict(user_input)
+
+    def arbitration_call(text):
+        arb_raw = bridge.compile_to_ir(
+            text,
+            isa_schema,
+            conceptnet_hints=", ".join(hints) if hints else None,
+            max_retries=1,
+            memory_terms=list(memory.graph.nodes),
+        )
+        if isinstance(arb_raw, dict) and "error" in arb_raw:
+            logs.append(f"[HYBRID] LLM arbitration hatasi: {arb_raw['error']}")
+            return []
+        parsed = parser.parse_raw_output(arb_raw)
+        return parsed if isinstance(parsed, list) else []
+
+    ir_chain, hybrid_logs = fuse_relations(
+        user_input,
+        ir_chain,
+        rule_candidates,
+        cls_probs,
+        arbitration_cb=arbitration_call if not cached_ir else None,
+    )
+    logs.extend(hybrid_logs)
 
     # Dil bilgisel denetim: POS filtre + lemma normalize (zeyrek)
     ir_chain, gf_logs, attr_augment = grammar_filter_ir(ir_chain, known_entities=list(memory.graph.nodes))
@@ -226,6 +333,24 @@ def run_cognitive_os(user_input):
     if not ir_chain:
         logs.append("[GRAMMAR_FILTER] Tum IR baglari elendi; hafizaya yazilmadi.")
         return finalize("Hata")
+
+    history_ir_for_gate = []
+    if isinstance(memory.graph, nx.MultiDiGraph):
+        for u, v, _, attrs in memory.graph.edges(data=True, keys=True):
+            op = (attrs or {}).get("relation") or (attrs or {}).get("label")
+            if op in validator.opcodes:
+                history_ir_for_gate.append({"op": op, "args": [u, v]})
+    else:
+        for u, v, attrs in memory.graph.edges(data=True):
+            op = (attrs or {}).get("relation") or (attrs or {}).get("label")
+            if op in validator.opcodes:
+                history_ir_for_gate.append({"op": op, "args": [u, v]})
+
+    gate_ok, gate_msg, gated_ir = verifier.verify(ir_chain, history_ir=history_ir_for_gate)
+    logs.append(f"[VERIFIER] {gate_msg}")
+    if not gate_ok:
+        return finalize("UNSAT")
+    ir_chain = gated_ir
 
     if not cached_ir:
         cache.add_ir(user_input, ir_chain)
@@ -314,11 +439,44 @@ def run_cognitive_os(user_input):
             return finalize("UNSAT")
 
     memory.graph = update_global_graph(ir_chain, base_graph=memory.graph)
+    final_ops = [str(i.get("op", "")) for i in (ir_chain or []) if isinstance(i, dict)]
+    record_opcode_quality(base_predicted_ops, final_ops)
+
+    removed_edges = truth_maintenance.resolve()
+    if removed_edges:
+        logs.append(f"[TRUTH_MAINTENANCE] Removed {removed_edges} conflicting edges.")
+
+    drift_msgs, _ = drift_alerts(memory.graph, known_opcodes=list(validator.opcodes.keys()))
+    for msg in drift_msgs:
+        logs.append(f"[DRIFT_ALERT] {msg}")
+
+    n_nodes, n_edges, n_upserts = embed_pipeline.index_graph(memory.graph, focus=main_entity, max_subgraphs=48)
+    logs.append(f"[VECTOR] Indexed graph (nodes={n_nodes}, edges={n_edges}, upserts={n_upserts}, backend={_VECTOR_STORE.backend_name()}).")
+    evidence = retriever.retrieve(user_input, focus_terms=[main_entity], top_k=6, mode=retrieval_mode)
+    if evidence:
+        head = "; ".join(e.get("text", "") for e in evidence[:3])
+        logs.append(f"[RETRIEVER] mode={retrieval_mode} evidence sample: {head}")
     logs.append("Dusunce basariyla dogrulandi ve hafizaya islendi.")
     logs.append(f"Baglamsal Hafiza: {context}")
 
     def background_inference():
+        added_rules = rule_engine.run(max_iterations=3, max_new=1200)
+        if added_rules:
+            logs.append(f"[RULE_ENGINE] Deterministic inference added {added_rules} edges.")
+        inference.infer_isa_attr_inheritance(max_new=800)
         inference.transitive_discovery()
+        trace_forward = trace_store.record_forward(memory.graph, main_entity, max_depth=2, max_records=25)
+        if trace_forward:
+            logs.append(f"[TRACE] Recorded {trace_forward} forward reasoning chains.")
+        hypotheses = inference.abductive_reasoning(main_entity, max_results=5, persist=True)
+        if hypotheses:
+            logs.append(f"[ABDUCTION] Added {len(hypotheses)} abductive hypotheses for '{main_entity}'.")
+        trace_inverse = trace_store.record_inverse(main_entity, hypotheses, max_records=25)
+        if trace_inverse:
+            logs.append(f"[TRACE] Recorded {trace_inverse} inverse reasoning chains.")
+        removed_bg = truth_maintenance.resolve()
+        if removed_bg:
+            logs.append(f"[TRUTH_MAINTENANCE] Background removed {removed_bg} edges.")
         save_global_graph(memory.graph)
 
     def background_enrichment():

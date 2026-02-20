@@ -10,11 +10,48 @@ from streamlit_agraph import Config, Edge, Node, agraph
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from core.listener import get_shadow_listener_status, read_recent_shadow_events, start_shadow_listener
+from core.model_bridge import PROVIDER_SPECS, ensure_provider_client
 from core.rule_guard import approve_candidate, auto_review_candidates, get_review_queue, get_rule_stats, reject_candidate
+from core.quality_metrics import aggregate_opcode_quality, drift_alerts, edge_diversity_metrics, provenance_coverage
 from core.vscode_chat_bridge import get_vscode_chat_bridge_status, start_vscode_chat_bridge
 from core.memory_manager import MemoryManager
-from main import clear_global_graph, load_global_graph, run_cognitive_os
+try:
+    from main import clear_global_graph, compact_global_graph, get_graph_backend, load_global_graph, run_cognitive_os
+except ImportError:
+    from main import clear_global_graph, get_graph_backend, load_global_graph, run_cognitive_os
+
+    def compact_global_graph(path=None):
+        graph = load_global_graph(path=path)
+        return graph.number_of_edges(), graph.number_of_edges()
 from core.validator import CognitiveValidator
+
+try:
+    from main import get_graph_backend_status
+except ImportError:
+    def get_graph_backend_status():
+        active = get_graph_backend()
+        return {
+            "configured_backend": os.getenv("COGNITIVE_GRAPH_BACKEND", "neo4j").strip().lower(),
+            "active_backend": active,
+            "neo4j_connected": active == "neo4j",
+            "neo4j_uri": os.getenv("NEO4J_URI", "bolt://localhost:7687"),
+            "neo4j_database": os.getenv("NEO4J_DATABASE", "neo4j"),
+            "json_path": os.getenv("COGNITIVE_GRAPH_JSON_PATH", "memory/global_graph.json"),
+            "json_backup_path": os.getenv("COGNITIVE_GRAPH_JSON_BACKUP_PATH", "memory/global_graph.backup.json"),
+            "fallback_to_json": active == "json",
+        }
+
+try:
+    from main import get_vector_backend_status
+except ImportError:
+    def get_vector_backend_status():
+        return {
+            "configured_backend": os.getenv("COGNITIVE_VECTOR_BACKEND", "qdrant").strip().lower(),
+            "active_backend": "local",
+            "collection": os.getenv("COGNITIVE_VECTOR_COLLECTION", "cognitive_graph"),
+            "qdrant_url": os.getenv("QDRANT_URL", "http://localhost:6333"),
+            "local_path": os.getenv("COGNITIVE_VECTOR_LOCAL_PATH", "memory/vector_index.jsonl"),
+        }
 
 
 st.set_page_config(layout="wide", page_title="Cognitive OS Dashboard")
@@ -39,6 +76,12 @@ if "shadow_listener_booted" not in st.session_state:
     st.session_state["shadow_listener_booted"] = False
 if "vscode_bridge_booted" not in st.session_state:
     st.session_state["vscode_bridge_booted"] = False
+if "llm_provider" not in st.session_state:
+    st.session_state["llm_provider"] = os.getenv("COGNITIVE_LLM_PROVIDER", "groq").strip().lower()
+if "llm_model" not in st.session_state:
+    st.session_state["llm_model"] = os.getenv("COGNITIVE_LLM_MODEL", "")
+if "llm_api_key" not in st.session_state:
+    st.session_state["llm_api_key"] = os.getenv("COGNITIVE_LLM_API_KEY", "")
 
 
 def edge_label(data):
@@ -71,14 +114,57 @@ def compute_active_region(graph, terms):
 
 
 st.sidebar.header("Controls")
+st.sidebar.subheader("LLM Provider")
+provider_options = list(PROVIDER_SPECS.keys())
+provider_labels = {k: v.get("label", k) for k, v in PROVIDER_SPECS.items()}
+default_provider = st.session_state["llm_provider"] if st.session_state["llm_provider"] in provider_options else "groq"
+provider = st.sidebar.selectbox(
+    "Model Source",
+    options=provider_options,
+    index=provider_options.index(default_provider),
+    format_func=lambda x: provider_labels.get(x, x),
+)
+st.session_state["llm_provider"] = provider
+
+default_model = st.session_state["llm_model"] or os.getenv("COGNITIVE_LLM_MODEL", "")
+model_name = st.sidebar.text_input("Model Name", value=default_model, help="Provider model id (local icin Ollama modeli).")
+st.session_state["llm_model"] = model_name
+
+if provider == "local":
+    st.sidebar.caption("Local mode: Ollama kullanilir. OLLAMA_URL ve model adini kontrol edin.")
+    st.session_state["llm_api_key"] = ""
+else:
+    key = st.sidebar.text_input("API Key", value=st.session_state["llm_api_key"], type="password")
+    st.session_state["llm_api_key"] = key
+    auto_install = st.sidebar.toggle("Auto-install client package", value=True)
+    ok_pkg, pkg_msg = ensure_provider_client(provider, auto_install=auto_install)
+    if ok_pkg:
+        st.sidebar.success(f"Client ready ({pkg_msg})")
+    else:
+        st.sidebar.error(f"Client error: {pkg_msg}")
+
+os.environ["COGNITIVE_LLM_PROVIDER"] = provider
+os.environ["COGNITIVE_LLM_MODEL"] = model_name.strip()
+os.environ["COGNITIVE_LLM_API_KEY"] = st.session_state.get("llm_api_key", "").strip()
+if provider != "local":
+    env_key = PROVIDER_SPECS.get(provider, {}).get("env_key")
+    if env_key:
+        os.environ[env_key] = st.session_state.get("llm_api_key", "").strip()
+
 if st.sidebar.button("Clear Memory"):
     clear_global_graph()
-    st.session_state["graph"] = nx.DiGraph()
+    st.session_state["graph"] = nx.MultiDiGraph()
     st.session_state["decision_log"] = []
     st.session_state["z3_status"] = "Unknown"
     st.session_state["last_ir"] = ""
     st.session_state["last_processed_input"] = ""
     st.session_state["active_terms"] = []
+    st.rerun()
+
+if st.sidebar.button("Compact Duplicate Edges"):
+    before, after = compact_global_graph()
+    st.session_state["graph"] = load_global_graph()
+    st.sidebar.success(f"Edges compacted: {before} -> {after}")
     st.rerun()
 
 if st.sidebar.button("Clear IR Cache"):
@@ -143,6 +229,20 @@ if st.sidebar.button("Apply Manual IR"):
 st.sidebar.subheader("Shadow Listener")
 z3_mode = os.getenv("COGNITIVE_USE_Z3", "0").strip().lower()
 st.sidebar.write("**Z3 Mode:**", "Native" if z3_mode in {"1", "true", "yes", "on"} else "Safe (No native check)")
+backend_status = get_graph_backend_status()
+st.sidebar.subheader("Graph Storage")
+st.sidebar.write("**Configured Backend:**", backend_status.get("configured_backend", "-"))
+st.sidebar.write("**Active Backend:**", backend_status.get("active_backend", "-"))
+st.sidebar.write("**Neo4j Connected:**", "Yes" if backend_status.get("neo4j_connected") else "No")
+if backend_status.get("fallback_to_json"):
+    st.sidebar.warning("Neo4j baglantisi yok; sistem JSON fallback kullaniyor.")
+if backend_status.get("active_backend") == "json":
+    st.sidebar.caption(f"JSON Path: {backend_status.get('json_path', '-')}")
+else:
+    st.sidebar.caption(
+        f"Neo4j: {backend_status.get('neo4j_uri', '-')}/{backend_status.get('neo4j_database', '-')}"
+    )
+st.sidebar.write("**Graph Backend:**", get_graph_backend())
 edge_rel = {}
 for _, _, attrs in st.session_state["graph"].edges(data=True):
     rel = edge_label(attrs)
@@ -153,6 +253,41 @@ if edge_rel:
     st.sidebar.write("**Edge Type Counts:**")
     for rel, cnt in sorted(edge_rel.items(), key=lambda x: x[1], reverse=True)[:8]:
         st.sidebar.write(f"- {rel}: {cnt}")
+
+validator_for_metrics = CognitiveValidator()
+div = edge_diversity_metrics(st.session_state["graph"], known_opcodes=list(validator_for_metrics.opcodes.keys()))
+prov = provenance_coverage(st.session_state["graph"])
+alerts, _ = drift_alerts(st.session_state["graph"], known_opcodes=list(validator_for_metrics.opcodes.keys()))
+
+st.sidebar.subheader("Quality Metrics")
+st.sidebar.write(f"Entropy (norm): {div.get('norm_entropy', 0.0):.3f}")
+st.sidebar.write(f"Coverage: {div.get('coverage', 0.0):.3f}")
+st.sidebar.write(f"Dominance ratio: {div.get('dominance_ratio', 0.0):.3f}")
+st.sidebar.write(f"CAUSE ratio: {div.get('cause_ratio', 0.0):.3f}")
+st.sidebar.write(f"Provenance coverage: {prov.get('coverage', 0.0):.3f}")
+
+if alerts:
+    st.sidebar.warning("Drift alarms:")
+    for a in alerts[:3]:
+        st.sidebar.write(f"- {a}")
+
+opcode_q = aggregate_opcode_quality()
+if opcode_q:
+    st.sidebar.write("**Per-opcode quality (proxy):**")
+    ranked = sorted(opcode_q.items(), key=lambda x: (x[1].get("tp", 0), x[1].get("precision_proxy", 0.0)), reverse=True)
+    for op, m in ranked[:8]:
+        st.sidebar.write(f"- {op}: P={m['precision_proxy']:.2f} R={m['recall_proxy']:.2f}")
+
+vstatus = get_vector_backend_status()
+st.sidebar.subheader("Vector Storage")
+st.sidebar.write("**Configured Backend:**", vstatus.get("configured_backend", "-"))
+st.sidebar.write("**Active Backend:**", vstatus.get("active_backend", "-"))
+st.sidebar.write("**Collection:**", vstatus.get("collection", "-"))
+if vstatus.get("active_backend") == "qdrant":
+    st.sidebar.caption(f"Qdrant: {vstatus.get('qdrant_url', '-')}")
+else:
+    st.sidebar.caption(f"Local Index: {vstatus.get('local_path', '-')}")
+
 st.sidebar.write("**Status:**", "Running" if shadow_status.get("running") else "Stopped")
 st.sidebar.write("**Processed Blocks:**", shadow_status.get("processed_blocks", 0))
 st.sidebar.write("**Produced IR:**", shadow_status.get("produced_ir", 0))
@@ -202,23 +337,41 @@ st.subheader("Knowledge Graph")
 G = st.session_state["graph"]
 active_nodes = compute_active_region(G, st.session_state["active_terms"])
 use_focus = len(active_nodes) > 0
+physics_enabled = st.sidebar.toggle("Graph Physics", value=False)
+max_edges = st.sidebar.slider("Max Render Edges", min_value=100, max_value=3000, value=900, step=100)
+max_nodes = st.sidebar.slider("Max Render Nodes", min_value=50, max_value=1200, value=350, step=50)
+
+render_nodes = set(G.nodes)
+if use_focus:
+    render_nodes = set(active_nodes)
+elif len(render_nodes) > max_nodes:
+    rank = sorted(G.degree, key=lambda x: x[1], reverse=True)
+    render_nodes = {n for n, _ in rank[:max_nodes]}
 
 nodes = []
-for n in G.nodes:
+for n in render_nodes:
     if use_focus and n not in active_nodes:
         nodes.append(Node(id=n, label=n, color="#cfd4dc", size=12))
     else:
         nodes.append(Node(id=n, label=n, color="#1f77b4", size=18))
 
 edges = []
+rendered_edge_count = 0
 for u, v, data in G.edges(data=True):
+    if u not in render_nodes or v not in render_nodes:
+        continue
+    if rendered_edge_count >= max_edges:
+        break
     label = edge_label(data)
     if use_focus and not (u in active_nodes and v in active_nodes):
         edges.append(Edge(source=u, target=v, label=label, color="#d9dde3"))
     else:
         edges.append(Edge(source=u, target=v, label=label, color="#4a5568"))
+    rendered_edge_count += 1
 
-config = Config(width=1000, height=560, directed=True, physics=True, hierarchical=False)
+if G.number_of_edges() > max_edges:
+    st.caption(f"Rendering first {max_edges} edges out of {G.number_of_edges()} for stability.")
+config = Config(width=1000, height=560, directed=True, physics=physics_enabled, hierarchical=False)
 agraph(nodes=nodes, edges=edges, config=config)
 
 

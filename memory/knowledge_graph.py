@@ -1,5 +1,6 @@
 ﻿import matplotlib.pyplot as plt
 import networkx as nx
+from datetime import datetime, timezone
 
 
 class CognitiveMemory:
@@ -38,7 +39,22 @@ class CognitiveMemory:
                 v = args[0]
                 self._ensure_node(u, type="SYSTEM", label="context")
                 self._ensure_node(v)
-                self.graph.add_edge(u, v, relation=op)
+                edge_attrs = {
+                    "relation": op,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "source": "runtime",
+                    "inference_rule": "DIRECT_INPUT",
+                    "confidence": 0.85,
+                }
+                if "confidence" in instr:
+                    edge_attrs["confidence"] = instr["confidence"]
+                if "provenance" in instr:
+                    edge_attrs["provenance"] = instr["provenance"]
+                self.graph.add_edge(
+                    u,
+                    v,
+                    **edge_attrs,
+                )
                 continue
 
             # Opcode-specific edge targets for semantic correctness.
@@ -59,6 +75,14 @@ class CognitiveMemory:
 
             self._ensure_node(u)
             self._ensure_node(v)
+            edge_attrs.setdefault("created_at", datetime.now(timezone.utc).isoformat())
+            edge_attrs.setdefault("source", "runtime")
+            edge_attrs.setdefault("inference_rule", "DIRECT_INPUT")
+            edge_attrs.setdefault("confidence", 0.85)
+            if "confidence" in instr:
+                edge_attrs["confidence"] = instr["confidence"]
+            if "provenance" in instr:
+                edge_attrs["provenance"] = instr["provenance"]
             self.graph.add_edge(u, v, **edge_attrs)
 
     def find_conflicts_with_history(self, new_ir):

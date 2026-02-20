@@ -1,27 +1,111 @@
-﻿import json
+import importlib
+import json
 import os
 import re
+import subprocess
+import sys
+import urllib.request
 
 from core.nlp_utils import normalize_and_match
 
 
-class NanbeigeBridge:
-    DEFAULT_MODEL = "llama-3.3-70b-versatile"
-    FALLBACK_MODEL = "llama-3.1-8b-instant"
-    DEFAULT_API_KEY = ""
+PROVIDER_SPECS = {
+    "local": {"label": "Local (Ollama)", "package": None, "env_key": None},
+    "groq": {"label": "Groq", "package": "groq", "env_key": "GROQ_API_KEY"},
+    "openai": {"label": "OpenAI", "package": "openai", "env_key": "OPENAI_API_KEY"},
+    "anthropic": {"label": "Anthropic", "package": "anthropic", "env_key": "ANTHROPIC_API_KEY"},
+    "google": {"label": "Google Gemini", "package": "google-generativeai", "env_key": "GEMINI_API_KEY"},
+    "mistral": {"label": "Mistral", "package": "mistralai", "env_key": "MISTRAL_API_KEY"},
+    "together": {"label": "Together", "package": "together", "env_key": "TOGETHER_API_KEY"},
+}
 
-    def __init__(self, model_name=None, api_key=None):
-        key = api_key or os.getenv("GROQ_API_KEY") or self.DEFAULT_API_KEY
-        self.model_name = model_name or os.getenv("GROQ_MODEL") or self.DEFAULT_MODEL
+
+def ensure_provider_client(provider: str, auto_install: bool = True):
+    provider = (provider or "").strip().lower()
+    spec = PROVIDER_SPECS.get(provider, {})
+    pkg = spec.get("package")
+    if not pkg:
+        return True, "ok"
+    try:
+        importlib.import_module("google.generativeai" if pkg == "google-generativeai" else pkg)
+        return True, "ok"
+    except Exception:
+        if not auto_install:
+            return False, f"{pkg} missing"
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", pkg], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True, "installed"
+    except Exception as exc:
+        return False, str(exc)
+
+
+class NanbeigeBridge:
+    # Backward compatibility: older modules reference DEFAULT_MODEL directly.
+    DEFAULT_MODEL = "llama-3.3-70b-versatile"
+    # Backward compatibility: older modules reference DEFAULT_API_KEY directly.
+    DEFAULT_API_KEY = ""
+    DEFAULT_MODELS = {
+        "local": "llama3.1",
+        "groq": "llama-3.3-70b-versatile",
+        "openai": "gpt-4o-mini",
+        "anthropic": "claude-3-5-sonnet-latest",
+        "google": "gemini-1.5-flash",
+        "mistral": "mistral-large-latest",
+        "together": "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
+    }
+    FALLBACK_MODEL = "llama-3.1-8b-instant"
+
+    def __init__(self, model_name=None, api_key=None, provider=None):
+        self.provider = (provider or os.getenv("COGNITIVE_LLM_PROVIDER", "groq")).strip().lower()
+        if self.provider not in PROVIDER_SPECS:
+            self.provider = "groq"
+        self.model_name = model_name or os.getenv("COGNITIVE_LLM_MODEL") or self.DEFAULT_MODELS.get(self.provider, self.DEFAULT_MODELS["groq"])
+        spec = PROVIDER_SPECS[self.provider]
+        env_key = spec.get("env_key")
+        self.api_key = api_key or os.getenv("COGNITIVE_LLM_API_KEY") or (os.getenv(env_key) if env_key else "")
         self.client = None
         self._init_error = ""
-        if not key:
-            self._init_error = "GROQ_API_KEY tanimli degil."
-            return
-        try:
-            from groq import Groq
 
-            self.client = Groq(api_key=key)
+        auto_install = os.getenv("COGNITIVE_AUTO_INSTALL_CLIENTS", "1").strip().lower() in {"1", "true", "yes", "on"}
+        ok, msg = ensure_provider_client(self.provider, auto_install=auto_install)
+        if not ok:
+            self._init_error = f"Client init failed: {msg}"
+            return
+        if self.provider != "local" and not self.api_key:
+            self._init_error = f"{env_key or 'API_KEY'} tanimli degil."
+            return
+        self._init_client()
+
+    def _init_client(self):
+        try:
+            if self.provider == "groq":
+                from groq import Groq
+
+                self.client = Groq(api_key=self.api_key)
+            elif self.provider == "openai":
+                from openai import OpenAI
+
+                base_url = os.getenv("OPENAI_BASE_URL", "").strip() or None
+                self.client = OpenAI(api_key=self.api_key, base_url=base_url)
+            elif self.provider == "anthropic":
+                from anthropic import Anthropic
+
+                self.client = Anthropic(api_key=self.api_key)
+            elif self.provider == "google":
+                import google.generativeai as genai
+
+                genai.configure(api_key=self.api_key)
+                self.client = genai
+            elif self.provider == "mistral":
+                from mistralai import Mistral
+
+                self.client = Mistral(api_key=self.api_key)
+            elif self.provider == "together":
+                from together import Together
+
+                self.client = Together(api_key=self.api_key)
+            else:
+                self.client = "local"
         except Exception as exc:
             self._init_error = str(exc)
 
@@ -58,10 +142,7 @@ class NanbeigeBridge:
             "CAUSE yalnizca acik nedensellik sinyali varsa (cunku, dolayisiyla, -se/-sa) kullan.\n"
         )
         prompt += f"\n### Komut:\nGirdi: {user_text}\nCikti: "
-        prompt += (
-            "\nDIKKAT: Sadece JSON listesini dondur. Aciklama yapma. "
-            "Yanit '[' ile baslamali ve ']' ile bitmeli."
-        )
+        prompt += "\nDIKKAT: Sadece JSON listesini dondur. Aciklama yapma. Yanit '[' ile baslamali ve ']' ile bitmeli."
         if error_msg:
             prompt += f"\nHata: {error_msg}\nLutfen semaya sadik kalarak tekrar derle."
         return prompt
@@ -83,67 +164,85 @@ class NanbeigeBridge:
 
     def _map_api_error(self, exc):
         msg = str(exc).lower()
-        status = getattr(exc, "status_code", None)
-        if status == 429 or "quota" in msg or "rate limit" in msg or "insufficient_quota" in msg:
-            return self._dashboard_alert(
-                "Groq kotasi/hiz limiti doldu. Lutfen Dashboard'u kontrol edin: https://console.groq.com"
-            )
-
-        network_tokens = [
-            "connection",
-            "timeout",
-            "timed out",
-            "network",
-            "dns",
-            "service unavailable",
-            "temporarily unavailable",
-            "reset",
-            "refused",
-        ]
-        if any(token in msg for token in network_tokens):
-            return self._dashboard_alert(
-                "Groq baglantisi koptu. Ag baglantisini ve Dashboard'u kontrol edin: https://console.groq.com"
-            )
+        if "quota" in msg or "rate limit" in msg or "insufficient_quota" in msg:
+            return self._dashboard_alert("API kotasi/hiz limiti doldu.")
+        if any(token in msg for token in ["connection", "timeout", "network", "dns", "unavailable", "reset", "refused"]):
+            return self._dashboard_alert("API baglantisi koptu veya servis gecici olarak kullanilamaz.")
         return None
 
+    def _chat_local_ollama(self, prompt, max_tokens=256):
+        base = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/")
+        url = f"{base}/api/generate"
+        payload = {
+            "model": self.model_name or self.DEFAULT_MODELS["local"],
+            "prompt": prompt,
+            "stream": False,
+            "options": {"temperature": 0, "num_predict": max_tokens},
+        }
+        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            raw = resp.read().decode("utf-8", errors="ignore")
+            row = json.loads(raw or "{}")
+            return row.get("response", "") or ""
+
     def _chat(self, prompt, max_tokens=160):
+        if self._init_error:
+            raise RuntimeError(self._init_error)
+        if self.provider == "local":
+            return self._chat_local_ollama(prompt, max_tokens=max_tokens)
         if self.client is None:
-            raise RuntimeError(
-                "[DASHBOARD_ALERT] groq paketi kurulu degil veya yuklenemedi. "
-                "Lutfen aktif ortamda 'pip install groq' calistirin."
+            raise RuntimeError("API client initialized degil.")
+
+        if self.provider == "groq":
+            completion = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0,
+                max_tokens=max_tokens,
             )
-        last_error = None
-        models = [self.model_name]
-        if self.model_name != self.FALLBACK_MODEL:
-            models.append(self.FALLBACK_MODEL)
-
-        for model in models:
-            try:
-                completion = self.client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.0,
-                    max_tokens=max_tokens,
-                )
-                content = completion.choices[0].message.content if completion.choices else ""
-                if content:
-                    return content
-            except Exception as exc:
-                last_error = exc
-                if getattr(exc, "status_code", None) in (400, 404):
-                    continue
-                raise
-
-        if last_error:
-            raise last_error
-        return ""
+            return completion.choices[0].message.content if completion.choices else ""
+        if self.provider == "openai":
+            completion = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0,
+                max_tokens=max_tokens,
+            )
+            return completion.choices[0].message.content if completion.choices else ""
+        if self.provider == "anthropic":
+            completion = self.client.messages.create(
+                model=self.model_name,
+                max_tokens=max_tokens,
+                temperature=0.0,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            content = completion.content or []
+            return content[0].text if content else ""
+        if self.provider == "google":
+            model = self.client.GenerativeModel(self.model_name)
+            completion = model.generate_content(prompt)
+            return getattr(completion, "text", "") or ""
+        if self.provider == "mistral":
+            completion = self.client.chat.complete(
+                model=self.model_name,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0,
+                max_tokens=max_tokens,
+            )
+            return completion.choices[0].message.content if completion.choices else ""
+        if self.provider == "together":
+            completion = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0,
+                max_tokens=max_tokens,
+            )
+            return completion.choices[0].message.content if completion.choices else ""
+        raise RuntimeError(f"Desteklenmeyen provider: {self.provider}")
 
     def _normalize_user_text(self, user_text, memory_terms=None):
         normalized = normalize_and_match(user_text, memory_terms=memory_terms, threshold=0.90)
-        stopwords = {
-            "bir", "ve", "ile", "icin", "ama", "fakat", "de", "da", "ki", "bu", "su", "o",
-            "cok", "az", "en", "gibi", "olan", "olanlar"
-        }
+        stopwords = {"bir", "ve", "ile", "icin", "ama", "fakat", "de", "da", "ki", "bu", "su", "o", "cok", "az", "en", "gibi", "olan", "olanlar"}
         filtered_tokens = [t for t in normalized["corrected_tokens"] if t not in stopwords]
         normalized["filtered_tokens"] = filtered_tokens
         normalized["filtered_text"] = " ".join(filtered_tokens).strip()
@@ -152,18 +251,11 @@ class NanbeigeBridge:
     def compile_to_ir(self, user_text, isa_schema, conceptnet_hints=None, max_retries=2, memory_terms=None):
         norm = self._normalize_user_text(user_text, memory_terms=memory_terms)
         normalized_text = norm["filtered_text"] or norm["corrected_text"] or norm["cleaned"]
-
         correction_note = None
         if norm["corrections"]:
             parts = [f"{c['from']} -> {c['to']} ({int(c['confidence'] * 100)}%)" for c in norm["corrections"]]
             correction_note = "; ".join(parts)
-
-        prompt = self._build_prompt(
-            normalized_text,
-            isa_schema,
-            hints=conceptnet_hints,
-            normalization_note=correction_note,
-        )
+        prompt = self._build_prompt(normalized_text, isa_schema, hints=conceptnet_hints, normalization_note=correction_note)
 
         allowed_words = set(norm["tokens"]) | set(norm["lemmas"]) | set(norm["corrected_tokens"]) | set(norm["filtered_tokens"])
         retries = 0
@@ -174,7 +266,6 @@ class NanbeigeBridge:
                 if not json_str:
                     retries += 1
                     continue
-
                 try:
                     ir_chain = json.loads(json_str)
                     for instr in ir_chain:
@@ -182,8 +273,6 @@ class NanbeigeBridge:
                             if isinstance(arg, str) and arg.lower() not in allowed_words:
                                 raise ValueError(f"IR icindeki '{arg}' girdi kavramlariyla eslesmiyor.")
                     return json_str
-                except json.JSONDecodeError:
-                    retries += 1
                 except Exception:
                     retries += 1
             except Exception as exc:
@@ -200,58 +289,45 @@ class NanbeigeBridge:
     def template_fallback(self, user_text):
         text = (user_text or "").lower().strip()
         irs = []
-
         m = re.findall(r"([\wçğıöşü]+)\s+bir\s+([\wçğıöşü]+)(?:dir|dır|dur|dür|tir|tır|tur|tür)\b", text)
         for x, y in m:
             irs.append({"op": "ISA", "args": [x, y]})
-
         m = re.findall(r"([\wçğıöşü]+)\s+([\wçğıöşü]+)(?:dir|dır|dur|dür|tir|tır|tur|tür)\b", text)
         for x, y in m:
             if y not in {"bir"}:
                 irs.append({"op": "ATTR", "args": [x, "ozellik", y]})
-
         m = re.search(r"^([\wçğıöşü]+)(?:\s+[\wçğıöşü]+)*\s+([\wçğıöşü]+(?:mak|mek))\s+ist(?:iyor|edi|er)\b", text)
         if m:
             irs.append({"op": "WANT", "args": [m.group(1), m.group(2)]})
-
         m = re.search(r"([\wçğıöşü]+)\s+([\wçğıöşü]+)\s+inan(?:iyor|ıyordu|di|dı|ir)\b", text)
         if m:
             irs.append({"op": "BELIEVE", "args": [m.group(1), m.group(2), "0.7"]})
-
         m = re.search(r"([\wçğıöşü]+)\s+icin\s+([\wçğıöşü]+)", text)
         if m:
             irs.append({"op": "GOAL", "args": [m.group(2), m.group(1), "medium"]})
-
         m = re.search(r"once\s+([\wçğıöşü]+)\s+sonra\s+([\wçğıöşü]+)", text)
         if m:
             irs.append({"op": "BEFORE", "args": [m.group(1), m.group(2)]})
-
         m = re.search(r"([\wçğıöşü]+)\s+(iyi|kotu|guzel|cirkin)\b", text)
         if m:
             score = "1.0" if m.group(2) in {"iyi", "guzel"} else "-1.0"
             irs.append({"op": "EVAL", "args": [m.group(1), score]})
-
         m = re.search(r"([\wçğıöşü]+)\s+(?:ama|fakat|ancak)\s+([\wçğıöşü]+)", text)
         if m:
             irs.append({"op": "OPPOSE", "args": [m.group(1), m.group(2)]})
-
         m = re.search(r"([\wçğıöşü]+)\s+(?:cunku|çünkü|dolayisiyla|dolayısıyla)\s+([\wçğıöşü]+)", text)
         if m:
             irs.append({"op": "CAUSE", "args": [m.group(1), m.group(2)]})
-
         if not irs:
             toks = re.findall(r"[\wçğıöşü]+", text)
             if len(toks) >= 2:
                 irs.append({"op": "DO", "args": [toks[0], toks[1]]})
-
         return irs if irs else None
 
     def feedback_correction(self, user_text, isa_schema, error_msg, max_retries=2, memory_terms=None):
         norm = self._normalize_user_text(user_text, memory_terms=memory_terms)
         normalized_text = norm["filtered_text"] or norm["corrected_text"] or norm["cleaned"]
         prompt = self._build_prompt(normalized_text, isa_schema, error_msg=error_msg)
-
-        allowed_words = set(norm["tokens"]) | set(norm["lemmas"]) | set(norm["corrected_tokens"]) | set(norm["filtered_tokens"])
         retries = 0
         while retries < max_retries:
             try:
@@ -260,24 +336,12 @@ class NanbeigeBridge:
                 if not json_str:
                     retries += 1
                     continue
-
-                try:
-                    ir_chain = json.loads(json_str)
-                    for instr in ir_chain:
-                        for arg in instr.get("args", []):
-                            if isinstance(arg, str) and arg.lower() not in allowed_words:
-                                raise ValueError(f"IR icindeki '{arg}' girdi kavramlariyla eslesmiyor.")
-                    return ir_chain
-                except json.JSONDecodeError:
-                    retries += 1
-                except Exception:
-                    retries += 1
+                return json.loads(json_str)
             except Exception as exc:
                 mapped = self._map_api_error(exc)
                 if mapped:
                     return {"error": mapped}
                 retries += 1
-
         ir_templates = self.template_fallback(normalized_text)
         if ir_templates:
             return ir_templates
@@ -298,4 +362,3 @@ class NanbeigeBridge:
             if mapped:
                 return json.dumps({"error": mapped}, ensure_ascii=False)
             return json.dumps({"error": str(exc)}, ensure_ascii=False)
-

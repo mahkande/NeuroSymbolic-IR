@@ -527,6 +527,12 @@ def grammar_filter_ir(
             final_op = "CAUSE"
 
         out_instr = {"op": final_op, "args": new_args}
+        if "confidence" in instr:
+            out_instr["confidence"] = instr["confidence"]
+        if "provenance" in instr:
+            out_instr["provenance"] = instr["provenance"]
+        if "source" in instr:
+            out_instr["source"] = instr["source"]
         filtered.append(out_instr)
 
         goal_ir = _intent_goal_ir(raw_text)

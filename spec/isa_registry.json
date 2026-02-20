@@ -1,0 +1,19 @@
+{
+  "active_version": "1.1",
+  "versions": {
+    "1.0": {
+      "path": "spec/isa_v1.json",
+      "status": "legacy"
+    },
+    "1.1": {
+      "path": "spec/isa_v1_1.json",
+      "status": "active"
+    }
+  },
+  "migration_policy": {
+    "strict_opcode": true,
+    "strict_args": true,
+    "default_from": "1.0",
+    "default_to": "1.1"
+  }
+}

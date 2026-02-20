@@ -1,0 +1,265 @@
+{
+  "version": "1.1",
+  "project": "Cognitive-IR-AGI",
+  "metadata": {
+    "author": "Human-AI Collaboration",
+    "description": "DÃ¼ÅŸÃ¼ncenin atomik ve Ã¶lÃ§Ã¼lebilir makine dili tanÄ±mÄ±."
+  },
+  "categories": {
+    "ONTOLOGICAL": {
+      "description": "VarlÄ±k ve Kavram TanÄ±mlama",
+      "opcodes": {
+        "DEF_ENTITY": {
+          "args": [
+            "ID",
+            "Type"
+          ],
+          "desc": "Fiziksel veya dijital bir varlÄ±ÄŸÄ± baÅŸlatÄ±r."
+        },
+        "DEF_CONCEPT": {
+          "args": [
+            "ID",
+            "Abstract_Type"
+          ],
+          "desc": "Soyut bir kavramÄ± (Ã¶rn: adalet) tanÄ±mlar."
+        },
+        "ISA": {
+          "args": [
+            "Child",
+            "Parent"
+          ],
+          "desc": "HiyerarÅŸik sÄ±nÄ±flandÄ±rma baÄŸÄ± kurar."
+        },
+        "EQUIV": {
+          "args": [
+            "A",
+            "B"
+          ],
+          "desc": "Ä°ki kavramÄ±n semantik eÅŸdeÄŸerliÄŸini belirtir."
+        },
+        "ATTR": {
+          "args": [
+            "ID",
+            "Key",
+            "Value"
+          ],
+          "desc": "VarlÄ±ÄŸa veya kavrama Ã¶zellik atar."
+        }
+      }
+    },
+    "EPISTEMIC": {
+      "description": "Bilgi ve Ä°nanÃ§ DurumlarÄ±",
+      "opcodes": {
+        "KNOW": {
+          "args": [
+            "Subject",
+            "Fact"
+          ],
+          "desc": "KesinliÄŸi doÄŸrulanmÄ±ÅŸ bilgi."
+        },
+        "BELIEVE": {
+          "args": [
+            "Subject",
+            "Fact",
+            "Confidence"
+          ],
+          "desc": "OlasÄ±lÄ±ksal inanÃ§ (0.0 - 1.0)."
+        },
+        "DOUBT": {
+          "args": [
+            "Subject",
+            "Fact"
+          ],
+          "desc": "Bilginin doÄŸruluÄŸuna dair ÅŸÃ¼phe iÅŸareti."
+        },
+        "WONDER": {
+          "args": [
+            "Subject",
+            "Question"
+          ],
+          "desc": "Eksik bilgiyi tanÄ±mlar ve arama tetikler."
+        },
+        "ASSUME": {
+          "args": [
+            "Fact"
+          ],
+          "desc": "AkÄ±l yÃ¼rÃ¼tme iÃ§in geÃ§ici varsayÄ±m."
+        }
+      }
+    },
+    "TELEOLOGICAL": {
+      "description": "Niyet, Arzu ve Motivasyon",
+      "opcodes": {
+        "WANT": {
+          "args": [
+            "Subject",
+            "State"
+          ],
+          "desc": "Bir duruma ulaÅŸma arzusu."
+        },
+        "AVOID": {
+          "args": [
+            "Subject",
+            "State"
+          ],
+          "desc": "Bir durumdan kaÃ§Ä±nma dÃ¼rtÃ¼sÃ¼."
+        },
+        "GOAL": {
+          "args": [
+            "Subject",
+            "State",
+            "Priority"
+          ],
+          "desc": "SomutlaÅŸtÄ±rÄ±lmÄ±ÅŸ stratejik hedef."
+        },
+        "INTEND": {
+          "args": [
+            "Subject",
+            "Action"
+          ],
+          "desc": "Eyleme geÃ§me kararlÄ±lÄ±ÄŸÄ±."
+        },
+        "EVAL": {
+          "args": [
+            "Object_or_State",
+            "Score"
+          ],
+          "desc": "Subjektif deÄŸer biÃ§me (-1.0 to 1.0)."
+        },
+        "DO": {
+          "args": [
+            "Subject",
+            "Action"
+          ],
+          "desc": "Opcode eslesmesi yoksa gecici eylem kaydi."
+        }
+      }
+    },
+    "CAUSAL_LOGIC": {
+      "description": "Nedensellik ve MantÄ±k AkÄ±ÅŸÄ±",
+      "opcodes": {
+        "CAUSE": {
+          "args": [
+            "Condition",
+            "Effect"
+          ],
+          "desc": "Deterministik neden-sonuÃ§ baÄŸÄ±."
+        },
+        "PREVENT": {
+          "args": [
+            "A",
+            "B"
+          ],
+          "desc": "A'nÄ±n varlÄ±ÄŸÄ± B'nin olmasÄ±nÄ± engeller."
+        },
+        "IMPLY": {
+          "args": [
+            "If_A",
+            "Then_B"
+          ],
+          "desc": "MantÄ±ksal Ã§Ä±karÄ±m."
+        },
+        "OPPOSE": {
+          "args": [
+            "Node_A",
+            "Node_B"
+          ],
+          "desc": "KarÅŸÄ±lÄ±klÄ± dÄ±ÅŸlama (Ã‡eliÅŸki)."
+        },
+        "TRIGGER": {
+          "args": [
+            "Event",
+            "Action"
+          ],
+          "desc": "Olay-Eylem tetiklemesi."
+        }
+      }
+    },
+    "DEONTIC": {
+      "description": "Kurallar, Ä°zinler ve SÄ±nÄ±rlar",
+      "opcodes": {
+        "MUST": {
+          "args": [
+            "Action"
+          ],
+          "desc": "KatÄ± zorunluluk (Hard Constraint)."
+        },
+        "MAY": {
+          "args": [
+            "Action"
+          ],
+          "desc": "Ä°zin verilen serbestlik alanÄ±."
+        },
+        "FORBID": {
+          "args": [
+            "Action"
+          ],
+          "desc": "YasaklanmÄ±ÅŸ eylem veya durum."
+        },
+        "CAN": {
+          "args": [
+            "Subject",
+            "Ability"
+          ],
+          "desc": "Kapasite ve yetenek tanÄ±mÄ±."
+        }
+      }
+    },
+    "TEMPORAL": {
+      "description": "Zaman ve SÃ¼reÃ§ YÃ¶netimi",
+      "opcodes": {
+        "BEFORE": {
+          "args": [
+            "Event_A",
+            "Event_B"
+          ],
+          "desc": "Zaman dizilimi."
+        },
+        "WHILE": {
+          "args": [
+            "Condition",
+            "Action"
+          ],
+          "desc": "SÃ¼regen durum ve eylem."
+        },
+        "START": {
+          "args": [
+            "Process"
+          ],
+          "desc": "SÃ¼reÃ§ baÅŸlangÄ±cÄ±."
+        },
+        "END": {
+          "args": [
+            "Process"
+          ],
+          "desc": "SÃ¼reÃ§ bitiÅŸi."
+        }
+      }
+    },
+    "META_COGNITIVE": {
+      "description": "Ã–z-Denetim ve Analiz",
+      "opcodes": {
+        "REFLECT": {
+          "args": [
+            "IR_Chain"
+          ],
+          "desc": "Kendi dÃ¼ÅŸÃ¼nce zincirini analiz et."
+        },
+        "CORRECT": {
+          "args": [
+            "Old_Op",
+            "New_Op"
+          ],
+          "desc": "Hata dÃ¼zeltme ve gÃ¼ncelleme."
+        },
+        "ANALOGY": {
+          "args": [
+            "A",
+            "B"
+          ],
+          "desc": "Ä°ki uzak yapÄ± arasÄ±nda benzerlik kur."
+        }
+      }
+    }
+  }
+}

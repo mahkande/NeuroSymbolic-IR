@@ -1,0 +1,53 @@
+name: Cognitive OS CI
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+
+jobs:
+  quality-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install networkx matplotlib watchdog z3-solver zeyrek nltk streamlit streamlit-agraph groq
+
+      - name: Build Gold Dataset
+        run: python scripts/build_gold_set_v1.py --per-opcode 30 --output data/gold/gold_set_v1.jsonl
+
+      - name: Eval Pipeline
+        run: python scripts/eval_pipeline.py --dataset data/gold/gold_set_v1.jsonl --output reports/eval_report_latest.json
+
+      - name: Compile + Release Check
+        run: python scripts/release_check.py
+
+      - name: Load Test Smoke
+        run: python scripts/load_test.py --requests 8 --workers 2 --listener-blocks 4 --long-words 320 --report memory/load_test_smoke_report.json
+
+      - name: Retriever Ablation
+        run: python scripts/ablation_runner.py --dataset data/gold/gold_set_v1.jsonl --top-k 6 --report reports/retriever_ablation_report.json --strategy-out spec/retrieval_strategy.json
+
+      - name: Threshold Gates
+        run: python scripts/threshold_gates.py --thresholds spec/release_thresholds.json --eval-report reports/eval_report_latest.json --load-report memory/load_test_smoke_report.json --ablation-report reports/retriever_ablation_report.json --release-report memory/release_check_report.json --out reports/threshold_gate_report.json
+
+      - name: Canary Rollout Check
+        run: python scripts/canary_rollout.py --policy spec/canary_policy.json --samples 6 --out reports/canary_rollout_report.json
+
+      - name: Upload Reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-reports
+          path: |
+            reports/*.json
+            memory/*report*.json
+            spec/retrieval_strategy.json

@@ -1,0 +1,17 @@
+{
+  "quality": {
+    "min_micro_f1": 0.85,
+    "min_macro_f1": 0.85,
+    "min_sentence_exact": 0.75
+  },
+  "latency": {
+    "max_parallel_p95_ms": 5000
+  },
+  "retrieval": {
+    "allowed_default_modes": [
+      "hybrid",
+      "vector-only",
+      "graph-only"
+    ]
+  }
+}

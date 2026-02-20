@@ -13,12 +13,17 @@ from core.listener import get_shadow_listener_status, read_recent_shadow_events,
 from core.model_bridge import PROVIDER_SPECS, ensure_provider_client
 from core.rule_guard import approve_candidate, auto_review_candidates, get_review_queue, get_rule_stats, reject_candidate
 from core.quality_metrics import (
-    aggregate_fallback_kpi,
     aggregate_opcode_quality,
     drift_alerts,
     edge_diversity_metrics,
     provenance_coverage,
 )
+try:
+    from core.quality_metrics import aggregate_fallback_kpi
+except ImportError:
+    # Backward compatibility with older quality_metrics module versions.
+    def aggregate_fallback_kpi(*args, **kwargs):
+        return {"rows": 0, "avg_useful_ratio": 0.0, "opcode_counts": {}, "source_counts": {}}
 from core.vscode_chat_bridge import get_vscode_chat_bridge_status, start_vscode_chat_bridge
 from core.memory_manager import MemoryManager
 try:

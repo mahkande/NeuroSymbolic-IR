@@ -33,6 +33,10 @@ conversation.txt
 # Runtime memory artifacts
 memory/global_graph.json
 memory/global_graph.backup.json
+memory/vector_index.jsonl
+memory/reasoning_traces.jsonl
+memory/reasoning_traces.test.jsonl
+memory/opcode_quality.jsonl
 memory/processed_logs.txt
 memory/shadow_events.jsonl
 memory/shadow_inbox.txt
@@ -49,6 +53,7 @@ memory/loadtest_processed_logs.jsonl
 # Logs
 *.log
 logs/
+.streamlit/
 
 # Optional local outputs
 *.png
@@ -56,6 +61,7 @@ logs/
 *.jpeg
 *.webp
 *.svg
+TASKS.md
 
 # Keep structure placeholders if needed
 !.gitkeep
